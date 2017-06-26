@@ -1,4 +1,4 @@
-module Component where
+module Main.Component where
 
 import Prelude
 import Data.Array as Array
@@ -6,72 +6,65 @@ import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Lens as HL
-import Halogen.HTML.Lens.Input as HL.Input
-import Halogen.HTML.Lens.TextArea as HL.TextArea
 import Halogen.HTML.Lens.Checkbox as HL.Checkbox
+import Halogen.HTML.Lens.Input as HL.Input
+import Halogen.HTML.Lens.Int as HL.Int
+import Halogen.HTML.Lens.TextArea as HL.TextArea
 import Halogen.HTML.Properties as HP
 import Control.Monad.Aff (Aff)
 import DOM (DOM)
-import Data.Array (filter, foldr, intercalate)
-import Data.Char (toUpper)
-import Data.Lens.Suggestion (Lens', lens, suggest)
-import Data.Maybe (Maybe(..))
-import Data.String (Pattern(..), joinWith, singleton, split, uncons)
-import Data.String (toUpper) as Str
-import Data.String.Utils (words)
-import Data.String.Regex (split) as Re
-import Data.String.Regex.Unsafe (unsafeRegex) as Re
-import Data.String.Regex.Flags (global) as Re
+import Data.Array (cons, drop, head, intercalate, length, replicate, tail, take)
+import Data.Lens.Iso.Newtype (_Newtype)
+import Data.Lens.Record (prop)
+import Data.Lens.Suggestion (Lens', lens)
+import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Symbol (SProxy(..))
+import Main.PolyBuilder
 
 type Query = HL.Query State
 
 type Element p = H.HTML p Query
 
 type State =
-  { description :: String
-  , name :: String
-  , executeBody :: String
-  , isInstant :: Boolean
+  { polynomial :: PolyBuilder
+  , origin :: Boolean
   }
 
-descriptionL :: Lens' State String
-descriptionL = lens (_.description) (\s d -> s { description = d })
+_polynomial :: Lens' State PolyBuilder
+_polynomial = prop (SProxy :: SProxy "polynomial")
 
-nameL :: Lens' State String
-nameL = lens (_.name) (\s n -> s { name = n })
+expand :: forall a. a -> Array a -> Int -> Array a
+expand pad array to = replicate d pad <> drop (-d) array
+  where
+    l = length array
+    d = to - l
 
-executeL :: Lens' State String
-executeL = lens (_.executeBody) (\s e -> s { executeBody = e })
+expand' :: forall a. a -> Array a -> Int -> Array a
+expand' pad array to = take to array <> replicate (to - length array) pad
 
-isInstantL :: Lens' State Boolean
-isInstantL = lens (_.isInstant) (\s i -> s { isInstant = i })
+_offbyone :: Lens' Int Int
+_offbyone = lens (_-1) \_ -> (_+1)
 
-toName :: String -> String
-toName = words >>> exclude >>> map camel >>> joinWith ""
-    where
-    blacklist = ["this", "the","a","an","it"]
-    exclude ws =
-        foldr (\w -> filter (w /= _)) ws blacklist
-    camel s =
-        case uncons s of
-            Nothing -> s
-            Just { head, tail } ->
-                (head # toUpper # singleton) <> tail
+_degree :: Lens' State Int
+_degree = _polynomial <<< _Newtype <<< lens length (expand' true) <<< _offbyone
 
-suggestDescriptionL :: Lens' State String
-suggestDescriptionL = suggest descriptionL toName nameL
+_origin :: Lens' State Boolean
+_origin = _polynomial <<< _Newtype <<< lens
+  (\poly -> case head poly of
+    Just true -> false
+    _ -> true
+  )
+  (\poly origin -> fromMaybe poly (cons (not origin) <$> tail poly))
 
-descriptionComponent :: forall p. State -> Element p
-descriptionComponent = HL.Input.renderAsField "Description" suggestDescriptionL
+degreeComponent :: forall p. State -> Element p
+degreeComponent state =
+  HH.div_
+    [ HH.text "Degree: "
+    , HL.Int.renderBounded (Just 0) (Just 10) _degree state
+    ]
 
-nameComponent :: forall p. State -> Element p
-nameComponent = HL.Input.renderAsField "Name" nameL
-
-executeComponent :: forall p. State -> Element p
-executeComponent = HL.TextArea.renderAsField "Execute" executeL
-
-instantComponent :: forall p. State -> Element p
-instantComponent = HL.Checkbox.renderAsField "Instant command" isInstantL
+originComponent :: forall p. State -> Element p
+originComponent = HL.Checkbox.renderAsField "Passes through (0,0)" _origin
 
 component :: forall eff. H.Component HH.HTML Query Unit Void (Aff (dom :: DOM | eff))
 component =
@@ -85,82 +78,22 @@ component =
 
   initialState :: State
   initialState =
-    { description: "Aim the camera"
-    , name: "AimCamera"
-    , executeBody: "Robot::camera->Set(0);"
-    , isInstant: false
+    { polynomial: PolyBuilder [false, true, true, false]
+    , origin: true
     }
 
   render :: State -> H.ComponentHTML Query
-  render state@{ description, name } =
+  render state@{ polynomial } =
     HH.div_
       [ HH.h1_
-          [ HH.text "Create FRC Command" ]
-      , descriptionComponent state
-      , nameComponent state
-      , executeComponent state
-      , instantComponent state
-      , HH.a_ $ texts ["Commands/", name, ".h" ]
-      , generateHeader state
-      , HH.a_ $ texts ["Commands/", name, ".cpp" ]
-      , generateSource state
+          [ HH.text "Create a Polynomial satisfying certain properties" ]
+      , degreeComponent state
+      , originComponent state
+      , renderPolyBuilder _polynomial state
       ]
 
   eval :: Query ~> H.ComponentDSL State Query Void (Aff (dom :: DOM | eff))
   eval = HL.eval
 
-texts :: forall p. Array String -> Array (Element p)
-texts = map HH.text
-
-from :: forall p. Array String -> Element p
-from = HH.span_ <<< texts
-
-commentline :: forall p. String -> Element p
-commentline text = from [ "// ", text, "\n" ]
-
 separate :: forall p i. HH.HTML p i -> Array (HH.HTML p i) -> HH.HTML p i
 separate sep = HH.span_ <<< intercalate [sep] <<< map Array.singleton
-
-generateHeader :: forall p. State -> Element p
-generateHeader state@{ description, name, isInstant } = HH.pre_ $
-    [ from [ "#ifndef ", macroname, "\n", "#define ", macroname, "\n\n" ]
-    , commentline description
-    , from [ "class ", name, " : public frc::", baseclass, " {\n"]
-    , HH.text "private:\n"
-    , HH.text "public:\n"
-    , from [ "\t", name, "();\n" ]
-    , HH.text "}"
-    , from [ "\n\n#endif ", "// ", macroname, "\n" ]
-    ]
-    where
-        baseclass = if isInstant then "InstantCommand" else "Command"
-        macroname = name
-            # Re.split (Re.unsafeRegex "(?=[A-Z])" Re.global)
-            # joinWith "_" # Str.toUpper
-            # ("_" <> _) # (_ <> "_H")
-
-generateSource :: forall p. State -> Element p
-generateSource state@{ description, name } = HH.pre_ $
-    [ commentline description
-    , method "" name [] []
-    , method "void" "Initialize" [] []
-    , method "void" "Execute" [] (texts $ split (Pattern "\n") state.executeBody)
-    , method "bool" "IsFinished" [] []
-    , method "void" "Done" [] []
-    , method "void" "Interrupted" [] []
-    ]
-    where
-    method type_ mname args body = HH.span_
-        [ from
-            [ type_
-            , if type_ == "" then "" else " "
-            , name
-            , "::"
-            , mname
-            , "("
-            ]
-        , separate (HH.text ", ") args
-        , from [ ") {\n\t" ]
-        , separate (HH.text "\n\t") body
-        , from [ "\n}\n\n" ]
-        ]
