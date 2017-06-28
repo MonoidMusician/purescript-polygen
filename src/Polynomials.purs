@@ -1,22 +1,24 @@
 module Main.Polynomials where
 
 import Prelude
+import Data.Array as Arr
+import Data.Map as Map
 import Control.Apply (lift2)
 import Data.Array ((:))
-import Data.Array (filter, fromFoldable, uncons, foldr) as Arr
 import Data.Either (Either(..))
+import Data.Foldable (class Foldable)
 import Data.Int (fromNumber, toNumber)
 import Data.Map (Map)
-import Data.Map (filter, fromFoldableWith, mapWithKey, isEmpty) as Map
 import Data.Maybe (Maybe(..), fromMaybe, isJust)
-import Data.Newtype (class Newtype)
+import Data.Newtype (class Newtype, unwrap)
+import Data.NonEmpty ((:|))
 import Data.Number (fromString) as Number
-import Data.String (joinWith, singleton)
+import Data.String (Pattern(..), Replacement(..), joinWith, replaceAll, singleton)
 import Data.String.Regex (Regex, match, replace, split)
 import Data.String.Regex.Flags (global, noFlags)
 import Data.String.Regex.Unsafe (unsafeRegex)
-import Data.Traversable (maximum)
-import Data.Tuple (Tuple(..))
+import Data.Traversable (maximum, fold)
+import Data.Tuple (Tuple(Tuple))
 import Main.PolyBuilder (PolyBuilder(..), _CharCode, dimension', geni, genx)
 import Math (pow)
 
@@ -63,6 +65,11 @@ newtype Polynomial = Polynomial
     })
 derive instance newtypePolynomial :: Newtype Polynomial _
 
+dispSum :: forall f. Foldable f => f String -> String
+dispSum =
+  Arr.fromFoldable >>> joinWith " + " >>>
+  replaceAll (Pattern "+ -") (Replacement "- ")
+
 disp :: Number -> String
 disp x = case fromNumber x of
   Just n ->
@@ -70,13 +77,20 @@ disp x = case fromNumber x of
   Nothing ->
     show x
 
+disc :: Number -> String
+disc 1.0 = ""
+disc x = disp x
+
 instance showPolynomial :: Show Polynomial where
-  show (Polynomial poly) = joinWith " + " $ map show1 poly
+  show (Polynomial poly) = dispSum $ map show2 $ Arr.groupBy samexp poly
     where
-      show1 { coefficient: 1.0, atom, exponent } =
-        show atom <> genx exponent
+      samexp { exponent: a } { exponent: b } = a == b
+      show1 { coefficient: 1.0, atom, exponent } = show atom
       show1 { coefficient, atom, exponent } =
-        disp coefficient <> show atom <> genx exponent
+        disc coefficient <> show atom
+      show2 (t@{ exponent } :| []) = show1 t <> genx exponent
+      show2 ts@({ exponent } :| _) =
+        "(" <> dispSum (map show1 ts) <> ")" <> genx exponent
 
 build :: PolyBuilder -> Polynomial
 build (PolyBuilder poly) = Polynomial $ go poly c0 0 []
@@ -96,6 +110,9 @@ build (PolyBuilder poly) = Polynomial $ go poly c0 0 []
           , exponent: i
           } : r
 
+parameters :: Polynomial -> Array Atom
+parameters = Arr.nub <<< map _.atom <<< unwrap
+
 derivative :: Polynomial -> Polynomial
 derivative (Polynomial poly) = Polynomial
   $ Arr.filter (_.coefficient >>> (_ /= 0.0))
@@ -114,17 +131,35 @@ degree :: Polynomial -> Int
 degree (Polynomial poly) = fromMaybe 0 $ maximum $ map _.exponent poly
 
 newtype Row = Row (Map Atom Number)
+newtype Table = Table (Map Atom Row)
 
 mkRow :: Array (Tuple Atom Number) -> Row
 mkRow = Row <<< Map.filter (0.0 /= _) <<< Map.fromFoldableWith (+)
 
+constant :: Number -> Row
+constant = Row <<< Map.singleton K
+
+variable :: Atom -> Row
+variable = Row <<< flip Map.singleton 1.0
+
+mkTable :: Array (Tuple Atom Row) -> Table
+mkTable = Table <<< Map.fromFoldableWith (<>)
+
 derive instance newtypeRow :: Newtype Row _
+derive newtype instance semigroupRow :: Semigroup Row
 instance showRow :: Show Row where
   show (Row m) | Map.isEmpty m = "0"
-  show (Row m) =
-    joinWith " + " $
+  show (Row m) = dispSum $
+    Map.mapWithKey (\atom value -> disc value <> show atom) m
+
+derive instance newtypeTable :: Newtype Table _
+derive newtype instance semigroupTable :: Semigroup Table
+instance showTable :: Show Table where
+  show (Table m) | Map.isEmpty m = "{}"
+  show (Table m) =
+    joinWith ", " $
     Arr.fromFoldable $
-    Map.mapWithKey (\atom value -> disp value <> show atom) m
+    Map.mapWithKey (\atom row -> show atom <> ": " <> show row) m
 
 evalAt :: Number -> Polynomial -> Row
 evalAt x (Polynomial poly) = mkRow $ map calc poly
@@ -177,3 +212,19 @@ parseLinear orig =
             Just k ->
               Right (Tuple K (k/parseDenomm denomm))
         Just m -> Left ("Failed to parse " <> term <> " as " <> show m)
+
+gather :: Array Row -> Array Atom
+gather = Arr.fromFoldable <<< Map.keys <<< fold <<< map (\(Row r) -> r)
+
+substitute :: Polynomial -> Table -> Polynomial
+substitute (Polynomial poly) (Table tbl) = Polynomial $ poly # Arr.concatMap
+  \t@{ coefficient, atom, exponent } ->
+    case Map.lookup atom tbl of
+      Nothing -> [t]
+      Just (Row row) ->
+        Arr.fromFoldable $ row # Map.mapWithKey
+          \a c ->
+            { coefficient: coefficient * c
+            , atom: a
+            , exponent
+            }
