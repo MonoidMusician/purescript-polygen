@@ -130,6 +130,9 @@ nthderivative n p = nthderivative (n-1) (derivative p)
 degree :: Polynomial -> Int
 degree (Polynomial poly) = fromMaybe 0 $ maximum $ map _.exponent poly
 
+mkDegree :: Int -> Polynomial
+mkDegree = build <<< PolyBuilder <<< flip Arr.replicate true
+
 newtype Row = Row (Map Atom Number)
 newtype Table = Table (Map Atom Row)
 

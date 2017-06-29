@@ -18,7 +18,7 @@ import Control.Monad.Eff (Eff)
 import DOM (DOM)
 import Data.Array (cons, drop, head, intercalate, length, replicate, singleton, tail, take, zip)
 import Data.Either (Either(..), isLeft)
-import Data.Lens (preview, prism', review)
+import Data.Lens (preview, prism', review, (^.))
 import Data.Lens.Iso.Newtype (_Newtype)
 import Data.Lens.Record (prop)
 import Data.Lens.Suggestion (Lens', lens)
@@ -28,7 +28,7 @@ import Data.Symbol (SProxy(..))
 import Data.Tuple (Tuple(..), fst, snd)
 import Main.Matrix (Matrix, inverse, matProduct)
 import Main.PolyBuilder (PolyBuilder(..), dimension, renderPolyBuilder)
-import Main.Polynomials (Atom(..), Variable(..), Polynomial, Row(Row), Table, build, degree, derivative, disp, evalAt, gather, genp, mkRow, mkTable, nthderivative, parameters, parseLinear, substitute, constant, variable)
+import Main.Polynomials (Atom(..), Variable(..), Polynomial, Row(Row), Table, build, degree, mkDegree, derivative, disp, evalAt, gather, genp, mkRow, mkTable, nthderivative, parameters, parseLinear, substitute, constant, variable)
 import Partial.Unsafe (unsafePartial)
 import Prelude hiding (degree)
 
@@ -36,13 +36,8 @@ type Query = HL.Query State
 
 type Element p = H.HTML p Query
 
-data State
-  = Building PolyBuilder
-  | Deriving Deriving
-
-type Deriving =
-  { polynomial :: Polynomial
-  , derivative :: Int
+type State =
+  { derivative :: Int
   , position :: Number
   , value :: String
   , conditions :: Array
@@ -52,44 +47,16 @@ type Deriving =
       }
   }
 
-_unsafePrismicLens :: forall a s. Prism' a s -> Lens' a s
-_unsafePrismicLens p = lens (unsafePartial fromJust <<< preview p) (const (review p))
-
-_Building :: Prism' State PolyBuilder
-_Building = prism' Building case _ of
-    Building poly -> Just poly
-    _ -> Nothing
-
-_unsafeBuilding :: Lens' State PolyBuilder
-_unsafeBuilding = _unsafePrismicLens _Building
-
-rebuild :: forall a s. Prism' s a -> (a -> s) -> (s -> s)
-rebuild p f s = case preview p s of
-  Nothing -> s
-  Just a -> f a
-
-_proceed :: State -> State
-_proceed = rebuild _Building \poly ->
-  Deriving { polynomial: build poly, derivative: 0, position: 1.0, value: "", conditions: [] }
-
-_Deriving :: Prism' State Deriving
-_Deriving = prism' Deriving case _ of
-    Deriving dstate -> Just dstate
-    _ -> Nothing
-
-_unsafeDeriving :: Lens' State Deriving
-_unsafeDeriving = _unsafePrismicLens _Deriving
-
-_derivative :: Lens' Deriving Int
+_derivative :: Lens' State Int
 _derivative = prop (SProxy :: SProxy "derivative")
 
-_polynomial :: Lens' Deriving Polynomial
-_polynomial = prop (SProxy :: SProxy "polynomial")
+_polynomial :: Lens' State Polynomial
+_polynomial = lens (\{ conditions } -> mkDegree $ Arr.length conditions) (const)
 
-_position :: Lens' Deriving Number
+_position :: Lens' State Number
 _position = prop (SProxy :: SProxy "position")
 
-_value :: Lens' Deriving String
+_value :: Lens' State String
 _value = prop (SProxy :: SProxy "value")
 
 expand :: forall a. a -> Array a -> Int -> Array a
@@ -116,9 +83,9 @@ _origin = _Newtype <<< lens
   (\poly origin -> fromMaybe poly (cons (not origin) <$> tail poly))
 
 addCondition :: State -> State
-addCondition state@(Deriving st@{ polynomial, derivative, position, value: val, conditions }) =
+addCondition state@{ derivative, position, value: val, conditions } =
   case parseLinear val of
-    Right value -> Deriving st
+    Right value -> state
       { conditions = conditions <>
           [{derivative
           , position
@@ -128,35 +95,12 @@ addCondition state@(Deriving st@{ polynomial, derivative, position, value: val, 
     _ -> state
 addCondition state = state
 
-degreeComponent :: forall p. State -> Element p
-degreeComponent state =
-  HH.div_
-    [ HH.text "Degree: "
-    , HL.Int.renderBounded (Just 0) (Just 10) (_unsafeBuilding <<< _degree) state
-    ]
-
-originComponent :: forall p. State -> Element p
-originComponent = HL.Checkbox.renderAsField "Passes through (0,0)" (_unsafeBuilding <<< _origin)
-
-proceedComponent :: forall p. Partial => State -> Element p
-proceedComponent state@(Building polynomial) =
-    HL.Button.renderAsField t _proceed (d < 2)
-    --HH.button [ HE.onClick $ HE.input_ $ msg ] [ HH.text t ]
-  where
-    setter :: forall eff. Eff (dom :: DOM | eff) (State -> State)
-    setter = pure _proceed
-    msg :: forall a. a -> HL.Query State a
-    msg = HL.UpdateState setter
-    d = dimension polynomial
-    s = if d == 1 then "" else "s"
-    t = "Proceed to satisfy " <> show d <> " variable" <> s
-
 derivativeComponent :: forall p. Partial => State -> Element p
-derivativeComponent state@(Deriving { polynomial, derivative }) =
+derivativeComponent state@{ derivative } =
   HH.div_
-    [ HL.Int.renderBounded (Just 0) (Just $ degree polynomial) (_unsafeDeriving <<< _derivative) state
+    [ HL.Int.renderBounded (Just 0) (Just $ degree (state ^. _polynomial)) _derivative state
     , HH.text (suff <> " derivative: ")
-    , HH.text $ show $ nthderivative derivative polynomial
+    , HH.text $ show $ nthderivative derivative (state ^. _polynomial)
     ]
   where
     suff = case derivative of
@@ -170,18 +114,18 @@ evalRow polynomial { position, derivative } =
   evalAt position $ nthderivative derivative polynomial
 
 positionComponent :: forall p. Partial => State -> Element p
-positionComponent state@(Deriving st@{ polynomial }) =
+positionComponent state =
   HH.div_
     [ HH.text "evaluated at x = "
-    , HL.Number.renderBounded (Just (-10.0)) (Just 10.0) (_unsafeDeriving <<< _position) state
-    , HH.text (": " <> show (evalRow polynomial st))
+    , HL.Number.renderBounded (Just (-10.0)) (Just 10.0) _position state
+    , HH.text (": " <> show (evalRow (state ^. _polynomial) state))
     ]
 
 valueComponent :: forall p. Partial => State -> Element p
-valueComponent state@(Deriving { polynomial, derivative, position, value }) =
+valueComponent state@{ derivative, position, value } =
   HH.div_
     [ HH.text "should equal "
-    , HL.Input.render (_unsafeDeriving <<< _value) state
+    , HL.Input.render _value state
     , HH.text (": " <> evalue)
     , HH.div_ [ HL.Button.renderAsField "Add condition" addCondition (isLeft parsed) ]
     ]
@@ -237,35 +181,14 @@ component =
 
   initialState :: State
   initialState =
-    --Building $ PolyBuilder [false, true, true]
-    Deriving
-      { polynomial: build (PolyBuilder [false, true, true, true, true])
-      , derivative: 0
-      , position: 1.0
-      , value: "h"
-      , conditions:
-          [ { derivative: 0, position: 0.5, value: constant 1.0 }
-          , { derivative: 1, position: 0.5, value: constant 0.0 }
-          , { derivative: 1, position: 1.0, value: variable (V (Variable "m"))}
-          ]
-      }
+    { derivative: 0
+    , position: 0.0
+    , value: "0"
+    , conditions: []
+    }
 
   render :: State -> H.ComponentHTML Query
-  render state@(Building polynomial) =
-    HH.div_
-      [ HH.h1_
-          [ HH.text "Create a Polynomial" ]
-      , HH.h2_
-          [ HH.text "which satisfies certain properties" ]
-      , degreeComponent state
-      , originComponent state
-      , renderPolyBuilder _unsafeBuilding state
-      , HH.div_ [ HH.text $ show polynomial ]
-      , HH.div_ [ HH.text $ show (build polynomial) ]
-      , HH.div_ [ HH.text $ show (derivative $ build polynomial) ]
-      , unsafePartial proceedComponent state
-      ]
-  render state@(Deriving { polynomial, derivative, position, value, conditions }) =
+  render state@{ derivative, position, value, conditions } =
     HH.div_
       [ HH.h1_
           [ HH.text "Create a Polynomial" ]
@@ -287,6 +210,7 @@ component =
             ]
       ]
       where
+        polynomial = state ^. _polynomial
         solvable =
             length conditions == length (parameters polynomial)
         rows = conditions # map \st -> Tuple (evalRow polynomial st) st.value
