@@ -14,27 +14,24 @@ import Halogen.HTML.Lens.Int as HL.Int
 import Halogen.HTML.Lens.Number as HL.Number
 import Halogen.HTML.Properties as HP
 import Control.Monad.Aff (Aff)
-import Control.Monad.Eff (Eff)
 import DOM (DOM)
 import Data.Array (cons, drop, head, intercalate, length, replicate, singleton, tail, take, zip)
 import Data.Either (Either(..), isLeft)
-import Data.Lens (preview, prism', review, (^.))
+import Data.Lens ((^.))
 import Data.Lens.Iso.Newtype (_Newtype)
 import Data.Lens.Record (prop)
 import Data.Lens.Suggestion (Lens', lens)
-import Data.Lens.Types (Prism')
-import Data.Maybe (Maybe(..), fromJust, fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Symbol (SProxy(..))
 import Data.Tuple (Tuple(..), fst, snd)
 import Main.Matrix (Matrix, mkMatrix, unMatrix, inverse, matProduct)
-import Main.PolyBuilder (PolyBuilder(..), dimension, renderPolyBuilder)
-import Main.Polynomials (Atom(..), Variable(..), Polynomial, Row(Row), Table, build, degree, mkDegree, derivative, disp, evalAt, gather, genp, mkRow, mkTable, nthderivative, parameters, parseLinear, substitute, constant, variable, lookupIn)
-import Partial.Unsafe (unsafePartial)
+import Main.PolyBuilder (PolyBuilder)
+import Main.Polynomials (Atom, Polynomial, Row(Row), Table, mkDegree, disp, evalAt, gather, genp, mkRow, mkTable, nthderivative, parameters, parseLinear, substitute, lookupIn)
 import Prelude hiding (degree)
 
 type Query = HL.Query State
-
 type Element p = H.HTML p Query
+type LensComponent = forall p. State -> Element p
 
 type State =
   { derivative :: Int
@@ -93,9 +90,8 @@ addCondition state@{ derivative, position, value: val, conditions } =
           }]
       }
     _ -> state
-addCondition state = state
 
-derivativeComponent :: forall p. Partial => State -> Element p
+derivativeComponent :: LensComponent
 derivativeComponent state@{ derivative, conditions } =
   HH.div_
     [ HL.Int.renderBounded (Just 0) (Just (length conditions)) _derivative state
@@ -113,7 +109,7 @@ evalRow :: forall r. Polynomial -> { position :: Number, derivative :: Int | r }
 evalRow polynomial { position, derivative } =
   evalAt position $ nthderivative derivative polynomial
 
-positionComponent :: forall p. Partial => State -> Element p
+positionComponent :: LensComponent
 positionComponent state =
   HH.div_
     [ HH.text "evaluated at x = "
@@ -121,7 +117,7 @@ positionComponent state =
     , HH.text (": " <> show (evalRow (state ^. _polynomial) state))
     ]
 
-valueComponent :: forall p. Partial => State -> Element p
+valueComponent :: LensComponent
 valueComponent state@{ derivative, position, value } =
   HH.div_
     [ HH.text "should equal "
@@ -195,9 +191,9 @@ component =
       , HH.h2_
           [ HH.text "which satisfies certain properties" ]
       , HH.div_ [ HH.text ("f(x) = " <> show polynomial) ]
-      , unsafePartial derivativeComponent state
-      , unsafePartial positionComponent state
-      , unsafePartial valueComponent state
+      , derivativeComponent state
+      , positionComponent state
+      , valueComponent state
       , HH.div_ [ HH.text ("f" <> genp derivative <> "(" <> show position <> ") = 0.0")]
       , HH.div_ $ map (HH.div_ <<< singleton) $ map (\r -> HH.text $ show (evalRow polynomial r) <> " = " <> show r.value) conditions
       , rowTable $ rows
