@@ -79,13 +79,19 @@ disp x = case fromNumber x of
 
 disc :: Number -> String
 disc 1.0 = ""
-disc x = disp x
+disc c = disp c
+
+disp2 :: Atom -> Number -> String
+disp2 K x = disp x
+disp2 atom c = disc c <> show atom
 
 instance showPolynomial :: Show Polynomial where
   show (Polynomial poly) = dispSum $ map show2 $ Arr.groupBy samexp poly
     where
       samexp { exponent: a } { exponent: b } = a == b
       show1 { coefficient: 1.0, atom, exponent } = show atom
+      show1 { coefficient, atom, exponent: 0 } =
+        disp2 atom coefficient
       show1 { coefficient, atom, exponent } =
         disc coefficient <> show atom
       show2 (t@{ exponent } :| []) = show1 t <> genx exponent
@@ -153,7 +159,7 @@ derive newtype instance semigroupRow :: Semigroup Row
 instance showRow :: Show Row where
   show (Row m) | Map.isEmpty m = "0"
   show (Row m) = dispSum $
-    Map.mapWithKey (\atom value -> disc value <> show atom) m
+    Map.mapWithKey disp2 m
 
 derive instance newtypeTable :: Newtype Table _
 derive newtype instance semigroupTable :: Semigroup Table
@@ -218,6 +224,12 @@ parseLinear orig =
 
 gather :: Array Row -> Array Atom
 gather = Arr.fromFoldable <<< Map.keys <<< fold <<< map (\(Row r) -> r)
+
+lookupIn :: Row -> Atom -> Number
+lookupIn (Row r) a = Map.lookup a r # fromMaybe 0.0
+
+lookup :: Atom -> Row -> Number
+lookup a (Row r) = Map.lookup a r # fromMaybe 0.0
 
 substitute :: Polynomial -> Table -> Polynomial
 substitute (Polynomial poly) (Table tbl) = Polynomial $ poly # Arr.concatMap

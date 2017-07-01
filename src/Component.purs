@@ -26,9 +26,9 @@ import Data.Lens.Types (Prism')
 import Data.Maybe (Maybe(..), fromJust, fromMaybe)
 import Data.Symbol (SProxy(..))
 import Data.Tuple (Tuple(..), fst, snd)
-import Main.Matrix (Matrix, inverse, matProduct)
+import Main.Matrix (Matrix, mkMatrix, unMatrix, inverse, matProduct)
 import Main.PolyBuilder (PolyBuilder(..), dimension, renderPolyBuilder)
-import Main.Polynomials (Atom(..), Variable(..), Polynomial, Row(Row), Table, build, degree, mkDegree, derivative, disp, evalAt, gather, genp, mkRow, mkTable, nthderivative, parameters, parseLinear, substitute, constant, variable)
+import Main.Polynomials (Atom(..), Variable(..), Polynomial, Row(Row), Table, build, degree, mkDegree, derivative, disp, evalAt, gather, genp, mkRow, mkTable, nthderivative, parameters, parseLinear, substitute, constant, variable, lookupIn)
 import Partial.Unsafe (unsafePartial)
 import Prelude hiding (degree)
 
@@ -96,9 +96,9 @@ addCondition state@{ derivative, position, value: val, conditions } =
 addCondition state = state
 
 derivativeComponent :: forall p. Partial => State -> Element p
-derivativeComponent state@{ derivative } =
+derivativeComponent state@{ derivative, conditions } =
   HH.div_
-    [ HL.Int.renderBounded (Just 0) (Just $ degree (state ^. _polynomial)) _derivative state
+    [ HL.Int.renderBounded (Just 0) (Just (length conditions)) _derivative state
     , HH.text (suff <> " derivative: ")
     , HH.text $ show $ nthderivative derivative (state ^. _polynomial)
     ]
@@ -151,10 +151,10 @@ rowTable rows =
       [show (i+1) <> "."] <> gets ps params <> ["="] <> gets vs values
 
 toMatrix :: Array Atom -> Array Row -> Matrix
-toMatrix values rows = map (\(Row r) -> map (flip Map.lookup r >>> fromMaybe 0.0) values) rows
+toMatrix values rows = mkMatrix $ map (\r -> map (lookupIn r) values) rows
 
 fromMatrix :: Array Atom -> Matrix -> Array Row
-fromMatrix values matrix = map (mkRow <<< zip values) matrix
+fromMatrix values matrix = map (mkRow <<< zip values) $ unMatrix matrix
 
 compute :: Array (Tuple Row Row) -> Table
 compute rows =
