@@ -139,11 +139,22 @@ degree (Polynomial poly) = fromMaybe 0 $ maximum $ map _.exponent poly
 mkDegree :: Int -> Polynomial
 mkDegree = build <<< PolyBuilder <<< flip Arr.replicate true
 
+mkSpecialized :: Int -> Array Int -> Polynomial
+mkSpecialized n incls = build $ PolyBuilder $
+  map (flip Arr.elem incls) (0 Arr... (n-1))
+
 newtype Row = Row (Map Atom Number)
 newtype Table = Table (Map Atom Row)
+derive newtype instance eqRow :: Eq Row
+derive newtype instance ordRow :: Ord Row
+derive newtype instance eqTable :: Eq Table
+derive newtype instance ordTable :: Ord Table
 
 mkRow :: Array (Tuple Atom Number) -> Row
 mkRow = Row <<< Map.filter (0.0 /= _) <<< Map.fromFoldableWith (+)
+
+zeroRow :: Row
+zeroRow = Row Map.empty
 
 constant :: Number -> Row
 constant = Row <<< Map.singleton K

@@ -1,8 +1,6 @@
 module Main.Component where
 
-import Data.Array as Array
 import Data.Array as Arr
-import Data.Map as Map
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
@@ -17,38 +15,55 @@ import Control.Monad.Aff (Aff)
 import DOM (DOM)
 import Data.Array (cons, drop, head, intercalate, length, replicate, singleton, tail, take, zip)
 import Data.Either (Either(..), isLeft)
-import Data.Lens ((^.))
 import Data.Lens.Iso.Newtype (_Newtype)
 import Data.Lens.Record (prop)
 import Data.Lens.Suggestion (Lens', lens)
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Symbol (SProxy(..))
-import Data.Tuple (Tuple(..), fst, snd)
 import Main.Matrix (Matrix, mkMatrix, unMatrix, inverse, matProduct)
 import Main.PolyBuilder (PolyBuilder)
-import Main.Polynomials (Atom, Polynomial, Row(Row), Table, mkDegree, disp, evalAt, gather, genp, mkRow, mkTable, nthderivative, parameters, parseLinear, substitute, lookupIn)
+import Main.Polynomials (Atom, Polynomial, Row, Table, disp, evalAt, gather, genp, lookupIn, mkDegree, mkRow, mkTable, nthderivative, parseLinear, substitute, zeroRow)
 import Prelude hiding (degree)
 
 type Query = HL.Query State
 type Element p = H.HTML p Query
-type LensComponent = forall p. State -> Element p
+type LensComponent = forall p. Computed -> State -> Element p
 
-type State =
+type StateBase r =
   { derivative :: Int
   , position :: Number
   , value :: String
-  , conditions :: Array
-      { derivative :: Int
-      , position :: Number
-      , value :: Row
-      }
+  | r
   }
+type State = StateBase (conditions :: Conditions)
+type Conditions = Array Condition
+type ConditionBase r =
+  { derivative :: Int
+  , position :: Number
+  , value :: Row
+  | r
+  }
+type ConditionPlus =
+  ConditionBase
+    ( parameters :: Row
+    , polynomial :: Polynomial
+    )
+type ConditionsPlus = Array ConditionPlus
+type Condition = ConditionBase ()
+type Computed = StateBase
+  ( polynomial :: Polynomial
+  , conditions :: ConditionsPlus
+  , params :: Array Atom
+  , values :: Array Atom
+  , coefficientM :: Matrix
+  , valueM :: Matrix
+  , coefficientMI :: Matrix
+  , productM :: Matrix
+  , result :: Table
+  )
 
 _derivative :: Lens' State Int
 _derivative = prop (SProxy :: SProxy "derivative")
-
-_polynomial :: Lens' State Polynomial
-_polynomial = lens (\{ conditions } -> mkDegree $ Arr.length conditions) (const)
 
 _position :: Lens' State Number
 _position = prop (SProxy :: SProxy "position")
@@ -92,11 +107,11 @@ addCondition state@{ derivative, position, value: val, conditions } =
     _ -> state
 
 derivativeComponent :: LensComponent
-derivativeComponent state@{ derivative, conditions } =
+derivativeComponent { derivative, conditions, polynomial } state =
   HH.div_
     [ HL.Int.renderBounded (Just 0) (Just (length conditions)) _derivative state
     , HH.text (suff <> " derivative: ")
-    , HH.text $ show $ nthderivative derivative (state ^. _polynomial)
+    , HH.text $ show $ nthderivative derivative polynomial
     ]
   where
     suff = case derivative of
@@ -110,15 +125,15 @@ evalRow polynomial { position, derivative } =
   evalAt position $ nthderivative derivative polynomial
 
 positionComponent :: LensComponent
-positionComponent state =
+positionComponent { polynomial } state =
   HH.div_
     [ HH.text "evaluated at x = "
     , HL.Number.renderBounded (Just (-10.0)) (Just 10.0) _position state
-    , HH.text (": " <> show (evalRow (state ^. _polynomial) state))
+    , HH.text (": " <> show (evalRow polynomial state))
     ]
 
 valueComponent :: LensComponent
-valueComponent state@{ derivative, position, value } =
+valueComponent { derivative, position, value } state =
   HH.div_
     [ HH.text "should equal "
     , HL.Input.render _value state
@@ -131,20 +146,33 @@ valueComponent state@{ derivative, position, value } =
       Left s -> s
       Right v -> show v
 
-rowTable :: forall p. Array (Tuple Row Row) -> Element p
+specialization :: Conditions -> Array Int
+specialization conditions =
+  Arr.catMaybes $ conditions # map case _ of
+    r@{ derivative: d } | trivial r ->
+      Just d
+    _ -> Nothing
+
+trivial :: Condition -> Boolean
+trivial r =
+  r.position == 0.0 && r.value == zeroRow
+
+nonTrivials :: Conditions -> Conditions
+nonTrivials = Arr.filter (not trivial)
+
+rowTable :: forall p. ConditionsPlus -> Element p
 rowTable rows =
   HH.div_ $ map (HH.tr_ <<< map (HH.td_ <<< Arr.singleton <<< HH.text))
     (_header Arr.: _rows)
   where
-    get = flip Map.lookup
-    gets (Row r) = map (get r >>> fromMaybe 0.0 >>> disp)
-    params = gather $ map fst rows
-    values = gather $ map snd rows
+    listWith r = map (lookupIn r >>> disp)
+    params = gather $ map _.parameters rows
+    values = gather $ map _.value rows
     _header :: Array String
     _header = [""] <> map show params <> ["="] <> map show values
     _rows :: Array (Array String)
-    _rows = rows # Arr.mapWithIndex \i (Tuple ps vs) ->
-      [show (i+1) <> "."] <> gets ps params <> ["="] <> gets vs values
+    _rows = rows # Arr.mapWithIndex \i { parameters: ps, value: vs } ->
+      [show (i+1) <> "."] <> listWith ps params <> ["="] <> listWith vs values
 
 toMatrix :: Array Atom -> Array Row -> Matrix
 toMatrix values rows = mkMatrix $ map (\r -> map (lookupIn r) values) rows
@@ -152,18 +180,34 @@ toMatrix values rows = mkMatrix $ map (\r -> map (lookupIn r) values) rows
 fromMatrix :: Array Atom -> Matrix -> Array Row
 fromMatrix values matrix = map (mkRow <<< zip values) $ unMatrix matrix
 
-compute :: Array (Tuple Row Row) -> Table
-compute rows =
-    mkTable $ zip params $ fromMatrix values matR
+compute :: State -> Computed
+compute { derivative, position, value, conditions: cs } =
+    { derivative, position, value
+    , polynomial, conditions
+    , params, values
+    , coefficientM, valueM
+    , coefficientMI, productM
+    , result
+    }
   where
-    paramRs = map fst rows
-    valueRs = map snd rows
+    polynomial = mkDegree $ Arr.length cs
+    conditions = cs # map
+      \{ derivative: d, position: p, value: v } ->
+        { derivative: d, position: p, value: v
+        , polynomial
+        , parameters:
+            evalAt p $
+              nthderivative d polynomial
+        }
+    paramRs = map _.parameters conditions
+    valueRs = map _.value conditions
     params = gather paramRs
     values = gather valueRs
-    matA = toMatrix params paramRs
-    matC = toMatrix values valueRs
-    matA_ = inverse matA
-    matR = matA_ `matProduct` matC
+    coefficientM = toMatrix params paramRs
+    valueM = toMatrix values valueRs
+    coefficientMI = inverse coefficientM
+    productM = coefficientMI `matProduct` valueM
+    result = mkTable $ zip params $ fromMatrix values productM
 
 component :: forall eff. H.Component HH.HTML Query Unit Void (Aff (dom :: DOM | eff))
 component =
@@ -184,35 +228,37 @@ component =
     }
 
   render :: State -> H.ComponentHTML Query
-  render state@{ derivative, position, value, conditions } =
+  render state =
     HH.div_
       [ HH.h1_
           [ HH.text "Create a Polynomial" ]
       , HH.h2_
           [ HH.text "which satisfies certain properties" ]
       , HH.div_ [ HH.text ("f(x) = " <> show polynomial) ]
-      , derivativeComponent state
-      , positionComponent state
-      , valueComponent state
+      , derivativeComponent computed state
+      , positionComponent computed state
+      , valueComponent computed state
       , HH.div_ [ HH.text ("f" <> genp derivative <> "(" <> show position <> ") = 0.0")]
-      , HH.div_ $ map (HH.div_ <<< singleton) $ map (\r -> HH.text $ show (evalRow polynomial r) <> " = " <> show r.value) conditions
-      , rowTable $ rows
-      , if not solvable then HH.text "-" else
-        let solution = compute rows in
-          HH.div_
-            [ HH.text $ show solution
-            , HH.br_
-            , HH.text $ show (substitute polynomial solution)
-            ]
+      , HH.div_ $ map (HH.div_ <<< singleton) $ map (\r -> HH.text $ show r.parameters <> " = " <> show r.value) conditions
+      , rowTable $ conditions
+      , HH.div_
+          [ HH.text $ show result
+          , HH.br_
+          , HH.text $ show (substitute polynomial result)
+          ]
       ]
       where
-        polynomial = state ^. _polynomial
-        solvable =
-            length conditions == length (parameters polynomial)
-        rows = conditions # map \st -> Tuple (evalRow polynomial st) st.value
+        computed@
+          { derivative, position, value
+          , polynomial, conditions
+          , params, values
+          , coefficientM, valueM
+          , coefficientMI, productM
+          , result
+          } = compute state
 
   eval :: Query ~> H.ComponentDSL State Query Void (Aff (dom :: DOM | eff))
   eval = HL.eval
 
 separate :: forall p i. HH.HTML p i -> Array (HH.HTML p i) -> HH.HTML p i
-separate sep = HH.span_ <<< intercalate [sep] <<< map Array.singleton
+separate sep = HH.span_ <<< intercalate [sep] <<< map Arr.singleton
