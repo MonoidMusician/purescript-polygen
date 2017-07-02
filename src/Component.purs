@@ -22,7 +22,7 @@ import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Symbol (SProxy(..))
 import Main.Matrix (Matrix, mkMatrix, unMatrix, inverse, matProduct)
 import Main.PolyBuilder (PolyBuilder)
-import Main.Polynomials (Atom, Polynomial, Row, Table, disp, evalAt, gather, genp, lookupIn, mkDegree, mkRow, mkTable, nthderivative, parseLinear, substitute, zeroRow)
+import Main.Polynomials (Atom, Polynomial, Row, Table, disp, evalAt, gather, genp, lookupIn, mkRow, mkSpecialized, mkTable, nthderivative, parseLinear, substitute, zeroRow)
 import Prelude hiding (degree)
 
 type Query = HL.Query State
@@ -190,8 +190,8 @@ compute { derivative, position, value, conditions: cs } =
     , result
     }
   where
-    polynomial = mkDegree $ Arr.length cs
-    conditions = cs # map
+    polynomial = mkSpecialized (Arr.length cs) $ specialization cs
+    conditions = nonTrivials cs # map
       \{ derivative: d, position: p, value: v } ->
         { derivative: d, position: p, value: v
         , polynomial

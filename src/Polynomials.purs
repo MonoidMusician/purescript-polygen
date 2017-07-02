@@ -141,7 +141,7 @@ mkDegree = build <<< PolyBuilder <<< flip Arr.replicate true
 
 mkSpecialized :: Int -> Array Int -> Polynomial
 mkSpecialized n incls = build $ PolyBuilder $
-  map (flip Arr.elem incls) (0 Arr... (n-1))
+  map (not $ flip Arr.elem incls) (0 Arr... (n-1))
 
 newtype Row = Row (Map Atom Number)
 newtype Table = Table (Map Atom Row)
