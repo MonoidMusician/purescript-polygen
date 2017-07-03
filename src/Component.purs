@@ -45,7 +45,7 @@ type ConditionBase r =
   }
 type ConditionPlus =
   ConditionBase
-    ( parameters :: Row
+    ( parameters :: Maybe Row
     , polynomial :: Polynomial
     )
 type ConditionsPlus = Array ConditionPlus
@@ -166,13 +166,14 @@ rowTable rows =
     (_header Arr.: _rows)
   where
     listWith r = map (lookupIn r >>> disp)
-    params = gather $ map _.parameters rows
+    params = gather $ Arr.catMaybes $ map _.parameters rows
     values = gather $ map _.value rows
     _header :: Array String
     _header = [""] <> map show params <> ["="] <> map show values
     _rows :: Array (Array String)
-    _rows = rows # Arr.mapWithIndex \i { parameters: ps, value: vs } ->
-      [show (i+1) <> "."] <> listWith ps params <> ["="] <> listWith vs values
+    _rows = Arr.catMaybes $ rows # Arr.mapWithIndex \i { parameters: psm, value: vs } ->
+      psm # map \ps ->
+        [show (i+1) <> "."] <> listWith ps params <> ["="] <> listWith vs values
 
 toMatrix :: Array Atom -> Array Row -> Matrix
 toMatrix values rows = mkMatrix $ map (\r -> map (lookupIn r) values) rows
@@ -191,15 +192,17 @@ compute { derivative, position, value, conditions: cs } =
     }
   where
     polynomial = mkSpecialized (Arr.length cs) $ specialization cs
-    conditions = nonTrivials cs # map
-      \{ derivative: d, position: p, value: v } ->
+    conditions = cs # map
+      \c@{ derivative: d, position: p, value: v } ->
         { derivative: d, position: p, value: v
         , polynomial
         , parameters:
-            evalAt p $
+            if trivial c
+            then Nothing
+            else Just $ evalAt p $
               nthderivative d polynomial
         }
-    paramRs = map _.parameters conditions
+    paramRs = Arr.catMaybes $ map _.parameters conditions
     valueRs = map _.value conditions
     params = gather paramRs
     values = gather valueRs
@@ -238,8 +241,13 @@ component =
       , derivativeComponent computed state
       , positionComponent computed state
       , valueComponent computed state
-      , HH.div_ [ HH.text ("f" <> genp derivative <> "(" <> show position <> ") = 0.0")]
-      , HH.div_ $ map (HH.div_ <<< singleton) $ map (\r -> HH.text $ show r.parameters <> " = " <> show r.value) conditions
+      , HH.div_ [ HH.text (showf computed <> " = " <> value)]
+      , HH.div_ $ map (HH.div_ <<< singleton) $ conditions # map
+          case _ of
+            c@{ parameters: Just ps } ->
+              HH.text $ showf c <> " = " <> show ps <> " = " <> show c.value
+            c ->
+              HH.text $ showf c <> " = " <> show c.value
       , rowTable $ conditions
       , HH.div_
           [ HH.text $ show result
@@ -256,6 +264,9 @@ component =
           , coefficientMI, productM
           , result
           } = compute state
+        showf :: forall r. { derivative :: Int, position :: Number | r } -> String
+        showf { derivative: d, position: p } =
+          "f" <> genp d <> "(" <> show p <> ")"
 
   eval :: Query ~> H.ComponentDSL State Query Void (Aff (dom :: DOM | eff))
   eval = HL.eval
