@@ -13,6 +13,7 @@
     "purescript-halogen": "^2.0.0",
     "purescript-stringutils": "^0.0.6",
     "purescript-numbers": "^5.0.0",
-    "purescript-integers": "^3.0.0"
+    "purescript-integers": "^3.0.0",
+    "purescript-quickcheck": "^4.4.0"
   }
 }

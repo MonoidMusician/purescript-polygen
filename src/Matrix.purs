@@ -7,24 +7,36 @@ import Data.Array ((!!), (..))
 import Data.Foldable (class Foldable, foldMapDefaultL, foldl, foldr, minimum, sum)
 import Data.Int (odd, toNumber)
 import Data.List (List(..), (:))
-import Data.Maybe (Maybe, fromMaybe, maybe)
-import Data.Traversable (class Traversable, sequenceDefault, traverse)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Traversable (class Traversable, sequence, sequenceDefault, traverse)
 import Data.Tuple (Tuple(..), fst, snd)
-
-data TraverseRowST a b = TraverseRowST Int (MatrixF a) b
-data TraverseColST a b = TraverseColST Int Int (MatrixF a) b
-derive instance functorTraverseRowST :: Functor (TraverseRowST a)
-derive instance functorTraverseColST :: Functor (TraverseColST a)
-
-startRow :: forall a b. MatrixF a -> b -> TraverseRowST a b
-startRow m b = TraverseRowST 0 m b
-
-startCol :: forall a b. TraverseRowST a b -> TraverseColST a b
-startCol (TraverseRowST i m b) = TraverseColST i 0 m b
+import Test.QuickCheck (class Testable, arbitrary)
+import Test.QuickCheck.Arbitrary (class Arbitrary)
+import Test.QuickCheck.Gen (Gen, chooseInt, vectorOf)
 
 data MatrixF a = Matrix (Array (Array a)) | Ignore Int Int (MatrixF a)
 type Matrix = MatrixF Number
 instance showM :: Show a => Show (MatrixF a) where show m = show $ unMatrix m
+
+instance eqMatrixF :: Eq a => Eq (MatrixF a) where
+  eq a b | dim a /= dim b = false
+  eq (Matrix a) (Matrix b) = a == b
+  eq (Ignore i j a) (Ignore k l b)
+    | i == k && j == l && a == b = true
+  eq a b = unMatrix a == unMatrix b
+
+instance arbitraryMatrix :: Arbitrary a => Arbitrary (MatrixF a) where
+  arbitrary = do
+    rows <- chooseInt 1 5
+    cols <- chooseInt 1 5
+    matrixOf rows cols
+
+matrixOf :: forall a. Arbitrary a => Int -> Int -> Gen (MatrixF a)
+matrixOf rows cols = do
+  Matrix <$> sequence (Arr.replicate rows (vectorOf cols (arbitrary :: Gen a)))
+
+sqmatrixOf :: forall a. Arbitrary a => Int -> Gen (MatrixF a)
+sqmatrixOf size = matrixOf size size
 
 instance matrixFunctor :: Functor MatrixF where
   map f (Matrix m) = Matrix $ map (map f) m
@@ -62,9 +74,15 @@ zipWith f ma mb = Matrix $ Arr.zipWith (Arr.zipWith f) a b
 zip :: forall a b. MatrixF a -> MatrixF b -> MatrixF (Tuple a b)
 zip = zipWith Tuple
 
-fill :: Number -> Int -> Int -> Matrix
+fill :: forall a. a -> Int -> Int -> MatrixF a
 fill n r c =
   Matrix $ Arr.replicate r $ Arr.replicate c n
+
+zeros :: forall n. Semiring n => Int -> Int -> MatrixF n
+zeros = fill zero
+
+identity :: forall n. Semiring n => Int -> MatrixF n
+identity sz = fill one sz sz
 
 instance matrixTraversable :: Traversable MatrixF where
   traverse f (Matrix m) = Matrix <$> traverse (traverse f) m
@@ -172,6 +190,19 @@ cofactorM :: Matrix -> Matrix
 cofactorM m = mapWithIndices (\i j _ -> sign i j * determinant (Ignore i j m)) m
 
 inverse :: Matrix -> Matrix
+inverse m
+  | dim m == Tuple 1 1
+  , Just v <- get 0 0 m
+    = mkMatrix [[1.0/v]]
+inverse m
+  | dim m == Tuple 2 2
+  , Just a <- get 0 0 m
+  , Just b <- get 0 1 m
+  , Just c <- get 1 0 m
+  , Just d <- get 1 1 m
+    = let s = 1.0/(a*d - b*c)
+          z = negate s
+      in mkMatrix [[s*d,z*b],[z*c,s*a]]
 inverse m = map (_ / det) $ transpose $ cfm
   where
     cfm = cofactorM m
@@ -190,24 +221,3 @@ dotProduct a b = sum $ Arr.zipWith (*) a b
 
 matProduct :: Matrix -> Matrix -> Matrix
 matProduct m n = Matrix $ map (\r -> map (dotProduct r) $ unMatrix trn) $ unMatrix m where trn = transpose n
-
-checkInverse :: Matrix -> Matrix
-checkInverse m = matProduct m (inverse m)
-
-checkDeterminant :: Matrix -> Boolean
-checkDeterminant m = d == det
-  where
-    cfm = cofactorM m
-    d = determinant m
-    det = sum $ Arr.zipWith (*) (getTop cfm) (getTop m)
-
-mint :: Array (Array Int) -> Matrix
-mint = map toNumber <<< mkMatrix
-m1 :: Matrix
-m1 = mint [[3,4],[2,3]]
-mall :: Matrix
-mall = mint [[1,2,3],[4,5,6],[7,8,9]]
-cftest :: Matrix
-cftest = mint [[1,2,3],[0,4,5],[1,0,6]]
-m6 :: Matrix
-m6 = mint [[0,0,0,0,0,1],[1,1,1,1,1,1],[5,4,3,2,1,0],[0,0,0,0,1,0],[0,0,0,2,0,0],[2,0,1,6,2,0,0]]
