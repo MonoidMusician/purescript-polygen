@@ -26,6 +26,9 @@ instance matrixFunctor :: Functor MatrixF where
   map f (Matrix m) = Matrix $ map (map f) m
   map f (Ignore i j m) = Ignore i j $ map f m
 
+instance matrixApply :: Apply MatrixF where
+  apply = zipWith id
+
 instance matrixFoldable :: Foldable MatrixF where
   foldl f b0 (Matrix m) = foldl (foldl f) b0 m
   foldl f b0 m@(Ignore _ _ _) = go 0 0 b0
