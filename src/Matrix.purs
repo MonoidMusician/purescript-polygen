@@ -8,8 +8,8 @@ import Data.Foldable (class Foldable, fold, foldMap, foldMapDefaultL, foldl, fol
 import Data.Int (odd)
 import Data.List (List(..), (:))
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
-import Data.Traversable (class Traversable, sequenceDefault, traverse)
-import Data.Tuple (Tuple(..), fst, snd)
+import Data.Traversable (class Traversable, for, sequenceDefault, traverse)
+import Data.Tuple (Tuple(..), fst, snd, uncurry)
 
 data MatrixF a = Matrix (Array (Array a)) | Ignore Int Int (MatrixF a)
 type Matrix = MatrixF Number
@@ -45,45 +45,11 @@ instance matrixTraversable :: Traversable MatrixF where
   traverse f (Ignore i j m) = Matrix <$> (traverse (traverse f) $ unMatrix m)
   sequence = sequenceDefault
 
-get :: forall a. Int -> Int -> MatrixF a -> Maybe a
-get i j (Matrix m) =
-  m !! i >>= (_ !! j)
-get i j (Ignore eye jay m) =
-  get (fixidx eye i) (fixidx jay j) m
-  where
-    fixidx ignored idx = if idx < ignored then idx else idx + 1
-
-gets :: forall a. Array (Tuple Int Int) -> MatrixF a -> Array a
-gets ijs m =
-  fromMaybe [] $ traverse (\(Tuple i j) -> get i j m) ijs
-
-zipWith :: forall a b c. (a -> b -> c) -> MatrixF a -> MatrixF b -> MatrixF c
-zipWith f (Matrix a) (Matrix b) = Matrix $ A.zipWith (A.zipWith f) a b
-zipWith f ma mb = Matrix $ A.zipWith (A.zipWith f) a b
-  where a = unMatrix ma
-        b = unMatrix mb
-
-zip :: forall a b. MatrixF a -> MatrixF b -> MatrixF (Tuple a b)
-zip = zipWith Tuple
-
-fill :: forall a. a -> Int -> Int -> MatrixF a
-fill n r c =
-  Matrix $ A.replicate r $ A.replicate c n
-
-build :: forall a. (Int -> Int -> a) -> Int -> Int -> MatrixF a
-build f r c =
-  Matrix $ map (\i -> map (f i) $ A.range 0 (c-1)) $ A.range 0 (r-1)
-
-zeros :: forall r. Semiring r => Int -> Int -> MatrixF r
-zeros = fill zero
-
-identity :: forall r. Semiring r => Int -> MatrixF r
-identity sz =
-  build (\i j -> if i == j then one else zero) sz sz
-
+-- | Create a `Matrix` from a 2D `Array`.
 mkMatrix :: forall a. Array (Array a) -> MatrixF a
 mkMatrix = Matrix
 
+-- | Take apart a `Matrix` as a 2D `Array`.
 unMatrix :: forall a. MatrixF a -> Array (Array a)
 unMatrix (Matrix m) = m
 unMatrix (Ignore i j m) =
@@ -92,31 +58,87 @@ unMatrix (Ignore i j m) =
     tryDeleteAt :: forall b. Int -> Array b -> Array b
     tryDeleteAt l as = A.deleteAt l as # fromMaybe as
 
-reMatrix :: forall a. MatrixF a -> MatrixF a
+-- | Resolves a `Matrix` into simple `Array` structure,
+reMatrix :: MatrixF ~> MatrixF
 reMatrix = mkMatrix <<< unMatrix
 
-unpack2x2 :: forall a. MatrixF a -> Array a
-unpack2x2 m | dim m == Tuple 2 2 = gets
-  [ Tuple 0 0, Tuple 0 1
-  , Tuple 1 0, Tuple 1 1 ] m
-unpack2x2 _ = []
-
+-- | Returns the number of rows and columns in a `Matrix`.
+-- Operates conservatively, giving the shortest column length.
 dim :: forall a. MatrixF a -> Tuple Int Int
 dim (Matrix m) =
   Tuple (A.length m) (fromMaybe 0 $ minimum $ map A.length m)
 dim (Ignore i j m) =
   dim m - Tuple 1 1
 
-altSum :: forall r. Ring r => Array r -> r
-altSum = foldr (-) zero
+-- | Fill a `Matrix` with the specified constant value.
+fill :: forall a. a -> Int -> Int -> MatrixF a
+fill n r c =
+  mkMatrix $ A.replicate r $ A.replicate c n
 
+-- | Generate a `Matrix` from a generator function which receives the current
+-- | row and column indices.
+generate :: forall a. (Int -> Int -> a) -> Int -> Int -> MatrixF a
+generate f r c =
+  mkMatrix $ map (\i -> map (f i) $ A.range 0 (c-1)) $ A.range 0 (r-1)
+
+-- | Return the transpose of a `Matrix`, where rows and columns are flipped.
+-- Does not behave nicely with non-rectangular shapes.
+transpose :: MatrixF ~> MatrixF
+transpose m =
+  mkMatrix $ A.range 0 (snd (dim m) - 1) # map (flip col $ reMatrix m)
+
+-- | Maybe get the value at row i, col j in the `Matrix`.
+get :: Int -> Int -> MatrixF ~> Maybe
+get i j (Matrix m) =
+  m !! i >>= (_ !! j)
+get i j (Ignore eye jay m) =
+  get (fixidx eye i) (fixidx jay j) m
+  where
+    fixidx ignored idx = if idx < ignored then idx else idx + 1
+
+-- | Get a list of the values at the specified indices, 0-indexed. Returns an
+-- | empty `Array` if one or more indices is not valid.
+gets :: Array (Tuple Int Int) -> MatrixF ~> Array
+gets ijs m =
+  fromMaybe [] $ for ijs $ map (_ $ m) (uncurry get)
+
+-- | Unpack a 2x2 `Matrix` into an `Array` of size 4 (success) or 0 (failure).
+unpack2x2 :: MatrixF ~> Array
+unpack2x2 m | dim m == Tuple 2 2 = gets
+  [ Tuple 0 0, Tuple 0 1
+  , Tuple 1 0, Tuple 1 1 ] m
+unpack2x2 _ = []
+
+-- | Get the ith row (0-indexed) of a `Matrix` as an `Array`.
+row :: Int -> MatrixF ~> Array
+row i m = fromMaybe [] $ unMatrix m !! i
+
+-- | Get the jth col (0-indexed) of a `Matrix` as an `Array`.
+col :: Int -> MatrixF ~> Array
+col j m = A.mapMaybe (_ !! j) $ unMatrix m
+
+-- | Return a sized `Matrix` filled with zeros.
+zeros :: forall r. Semiring r => Int -> Int -> MatrixF r
+zeros = fill zero
+
+-- | Generate the multiplicative identity for a `Matrix` in a `Semiring`.
+-- | (Square sized with ones on the diagonal, zeros elsewhere.)
+identity :: forall r. Semiring r => Int -> MatrixF r
+identity sz =
+  generate (\i j -> if i == j then one else zero) sz sz
+
+-- | Map just the top row of a `Matrix`, passing the minor `Matrix`. Used to
+-- | compute determinants.
 mapTop :: forall a b. (MatrixF a -> a -> b) -> MatrixF a -> Array b
 mapTop f m =
   A.mapWithIndex (\i -> f (Ignore 0 i m)) $ getTop m
 
-getTop :: forall a. MatrixF a -> Array a
+-- | Get the top row of a `Matrix` as an `Array`.
+getTop :: MatrixF ~> Array
 getTop m = A.mapMaybe (\i -> get 0 i m) (0..fst (dim m))
 
+-- | Map through a `Matrix`, additionally passing the row and column indices to
+-- | the mapping function.
 mapWithIndices :: forall a b. (Int -> Int -> a -> b) -> MatrixF a -> MatrixF b
 mapWithIndices f m = list2mat $ go 0 0 (Nil : Nil)
   where
@@ -136,16 +158,36 @@ mapWithIndices f m = list2mat $ go 0 0 (Nil : Nil)
     conv = A.reverse <<< A.fromFoldable
     list2mat = Matrix <<< map conv <<< conv
 
-sign :: forall r. Ring r => Int -> Int -> r
-sign i j | odd (i+j) = negate one
-sign _ _ = one
+-- | Zip two matrices together, where the specified function determines the
+-- | value in the final `Matrix` based on the corresponding values of the
+-- | original matrices.
+-- Operates conservatively, taking the shortest rows and columns it finds.
+zipWith :: forall a b c. (a -> b -> c) -> MatrixF a -> MatrixF b -> MatrixF c
+zipWith f (Matrix a) (Matrix b) = Matrix $ A.zipWith (A.zipWith f) a b
+zipWith f ma mb = Matrix $ A.zipWith (A.zipWith f) a b
+  where a = unMatrix ma
+        b = unMatrix mb
 
-signed :: forall r. Ring r => Int -> Int -> r -> r
-signed i j n = n * sign i j
+-- | Creates a `Matrix` of `Tuple`s of the corresponding elements. Uncommon.
+zip :: forall a b. MatrixF a -> MatrixF b -> MatrixF (Tuple a b)
+zip = zipWith Tuple
 
-determinant2x2 :: forall r. Ring r => r -> r -> r -> r -> r
-determinant2x2 a b c d = a*d - b*c
+-- | Returns the addition of two matrices with a `Semiring` instance.
+matAdd :: forall r. Semiring r => MatrixF r -> MatrixF r -> MatrixF r
+matAdd = zipWith (+)
 
+-- | Returns the dot product of two vectors with a `Semiring` instance.
+dotProduct :: forall r. Semiring r => Array r -> Array r -> r
+dotProduct a b = sum $ A.zipWith (*) a b
+
+-- | Returns the product of two matrices with a `Semiring` instance.
+matProduct :: forall r. Semiring r => MatrixF r -> MatrixF r -> MatrixF r
+matProduct m n =
+  let trn = unMatrix $ transpose n
+  in mkMatrix $ map ((flip map trn) <<< dotProduct) $ unMatrix m
+
+-- | Returns the determinant of a square `Matrix` with elements from a `Ring`.
+-- | Returns 0 when in doubt.
 determinant :: forall r. Ring r => MatrixF r -> r
 determinant m =
   case dim m of
@@ -155,14 +197,26 @@ determinant m =
       [a,b,c,d] -> determinant2x2 a b c d
       _ -> zero
     Tuple r c | r /= c -> zero
-    _ -> altSum $ mapTop calccell m
+    _ -> foldr (-) zero $ mapTop (\minor d -> d * determinant minor) m
 
-calccell :: forall r. Ring r => MatrixF r -> r -> r
-calccell m d = d * determinant m
+-- | Specialized determinant of a deconstructed 2x2 matrix.
+determinant2x2 :: forall r. Ring r => r -> r -> r -> r -> r
+determinant2x2 a b c d = a*d - b*c
 
+-- | Compute the `Matrix` of cofactors. Requires square `Matrix` with elements
+-- | from a `Ring`.
 cofactorM :: forall r. Ring r => MatrixF r -> MatrixF r
-cofactorM m = mapWithIndices (\i j _ -> sign i j * determinant (Ignore i j m)) m
+cofactorM m =
+    mapWithIndices (\i j _ -> sign i j * determinant (Ignore i j m)) m
+  where
+    sign i j | odd (i+j) = negate one
+    sign _ _ = one
 
+-- | Return the inverse of a `Matrix` such that the left or right product of
+-- | a `Matrix` and its inverse equals `identity` (of the same size). Requires
+-- | a square `Matrix` with elements from a `EuclideanRing`. Will return a
+-- | `Matrix` of NaNs (or other division by `zero` values) if the inverse does
+-- | not exist.
 inverse :: forall r. EuclideanRing r => MatrixF r -> MatrixF r
 inverse m
   | dim m == Tuple 1 1
@@ -170,28 +224,15 @@ inverse m
     = mkMatrix [[one/v]]
 inverse m
   | [a, b, c, d] <- unpack2x2 m
+      -- compute scaling factors, positive and negative
     = let s = one / determinant2x2 a b c d
           z = negate s
       in mkMatrix [[s*d,z*b],[z*c,s*a]]
-inverse m = map (_ / det) $ transpose $ cfm
+inverse m =
+    -- transpose cofactors and divide by determinant
+    map (_ / det) $ transpose $ cfm
   where
+    -- compute cofactors
     cfm = cofactorM m
+    -- compute determinant` from product of entries and cofactors
     det = sum $ A.zipWith (*) (getTop cfm) (getTop m)
-
-row :: forall a. Int -> MatrixF a -> Array a
-row i m = fromMaybe [] $ unMatrix m !! i
-
-col :: forall a. Int -> MatrixF a -> Array a
-col j m = A.mapMaybe (_ !! j) $ unMatrix m
-
-transpose :: forall a. MatrixF a -> MatrixF a
-transpose m =
-  Matrix $ A.range 0 (snd (dim m) - 1) # map (flip col $ reMatrix m)
-
-dotProduct :: forall r. Semiring r => Array r -> Array r -> r
-dotProduct a b = sum $ A.zipWith (*) a b
-
-matProduct :: forall r. Semiring r => MatrixF r -> MatrixF r -> MatrixF r
-matProduct m n =
-  let trn = unMatrix $ transpose n
-  in mkMatrix $ map ((flip map trn) <<< dotProduct) $ unMatrix m
