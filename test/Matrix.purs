@@ -11,32 +11,32 @@ import Math (abs, round)
 import Test.QuickCheck (class Arbitrary, QC, Result(..), arbitrary, quickCheck, quickCheck', (/==), (<?>), (===))
 import Test.QuickCheck.Gen (Gen, chooseInt, vectorOf)
 
-checkInverse :: Matrix -> Matrix
+checkInverse :: Matrix Number -> Matrix Number
 checkInverse m = matProduct m (inverse m)
 
-checkDeterminant :: Matrix -> Boolean
+checkDeterminant :: Matrix Number -> Boolean
 checkDeterminant m = d == det
   where
     cfm = cofactorM m
     d = determinant m
     det = sum $ A.zipWith (*) (getTop cfm) (getTop m)
 
-matrixOf :: forall a. Arbitrary a => Int -> Int -> Gen (MatrixF a)
+matrixOf :: forall a. Arbitrary a => Int -> Int -> Gen (Matrix a)
 matrixOf rows cols = do
   Matrix <$> sequence (A.replicate rows $ vectorOf cols $ arbitrary :: Gen a)
 
-sqmatrixOf :: forall a. Arbitrary a => Int -> Gen (MatrixF a)
+sqmatrixOf :: forall a. Arbitrary a => Int -> Gen (Matrix a)
 sqmatrixOf size = matrixOf size size
 
-mint :: Array (Array Int) -> Matrix
+mint :: Array (Array Int) -> Matrix Number
 mint = map toNumber <<< mkMatrix
-m2 :: Matrix
+m2 :: Matrix Number
 m2 = mint [[3,4],[2,3]]
-mall :: Matrix
+mall :: Matrix Number
 mall = mint [[1,2,3],[4,5,6],[7,8,9]]
-cftest :: Matrix
+cftest :: Matrix Number
 cftest = mint [[1,2,3],[0,4,5],[1,0,6]]
-m6 :: Matrix
+m6 :: Matrix Number
 m6 = mint [[0,0,0,0,0,1],[1,1,1,1,1,1],[5,4,3,2,1,0],[0,0,0,0,1,0],[0,0,0,2,0,0],[2,0,1,6,2,0,0]]
 
 joinR :: Array Result -> Result
@@ -70,7 +70,7 @@ deferror false f = Failed (f unit)
 
 infix 2 deferror as <??>
 
-checkSquare :: Matrix -> Array Result
+checkSquare :: Matrix Number -> Array Result
 checkSquare sq =
   let
     Tuple rows cols = dim sq
@@ -126,7 +126,7 @@ testSquareIgnore = do
     _ -> pure sq
   pure (joinR (map (_ $ sqi) ops <> checkSquare sqi))
 
-ops :: Array (Matrix -> Result)
+ops :: Array (Matrix Number -> Result)
 ops =
   [ dblCheck "dim" dim
   , dblCheck "getTop" getTop
@@ -136,7 +136,7 @@ ops =
   , dblCheck "transpose" transpose
   ]
 
-dblCheck :: forall a. Eq a => Show a => String -> (Matrix -> a) -> Matrix -> Result
+dblCheck :: forall a. Eq a => Show a => String -> (Matrix Number -> a) -> Matrix Number -> Result
 dblCheck fn f m =
   let
     w = reMatrix m

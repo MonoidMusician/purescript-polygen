@@ -55,10 +55,10 @@ type Computed = StateBase
   , conditions :: ConditionsPlus
   , params :: Array Atom
   , values :: Array Atom
-  , coefficientM :: Matrix
-  , valueM :: Matrix
-  , coefficientMI :: Matrix
-  , productM :: Matrix
+  , coefficientM :: Matrix Number
+  , valueM :: Matrix Number
+  , coefficientMI :: Matrix Number
+  , productM :: Matrix Number
   , result :: Table
   )
 
@@ -175,10 +175,10 @@ rowTable rows =
       psm # map \ps ->
         [show (i+1) <> "."] <> listWith ps params <> ["="] <> listWith vs values
 
-toMatrix :: Array Atom -> Array Row -> Matrix
+toMatrix :: Array Atom -> Array Row -> Matrix Number
 toMatrix values rows = mkMatrix $ map (\r -> map (lookupIn r) values) rows
 
-fromMatrix :: Array Atom -> Matrix -> Array Row
+fromMatrix :: Array Atom -> Matrix Number -> Array Row
 fromMatrix values matrix = map (mkRow <<< zip values) $ unMatrix matrix
 
 compute :: State -> Computed
