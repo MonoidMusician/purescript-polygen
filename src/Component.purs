@@ -153,11 +153,11 @@ specialization conditions =
       Just d
     _ -> Nothing
 
-trivial :: Condition -> Boolean
+trivial :: forall r. ConditionBase r -> Boolean
 trivial r =
   r.position == 0.0 && r.value == zeroRow
 
-nonTrivials :: Conditions -> Conditions
+nonTrivials :: forall r. Array (ConditionBase r) -> Array (ConditionBase r)
 nonTrivials = Arr.filter (not trivial)
 
 rowTable :: forall p. ConditionsPlus -> Element p
@@ -167,7 +167,7 @@ rowTable rows =
   where
     listWith r = map (lookupIn r >>> disp)
     params = gather $ Arr.catMaybes $ map _.parameters rows
-    values = gather $ map _.value rows
+    values = gather $ map _.value $ nonTrivials rows
     _header :: Array String
     _header = [""] <> map show params <> ["="] <> map show values
     _rows :: Array (Array String)
@@ -203,7 +203,7 @@ compute { derivative, position, value, conditions: cs } =
               nthderivative d polynomial
         }
     paramRs = Arr.catMaybes $ map _.parameters conditions
-    valueRs = map _.value conditions
+    valueRs = map _.value $ nonTrivials conditions
     params = gather paramRs
     values = gather valueRs
     coefficientM = toMatrix params paramRs
