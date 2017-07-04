@@ -2,13 +2,14 @@ module Test.Matrix where
 
 import Prelude
 import Main.Matrix
-import Data.Array as Arr
+import Data.Array as A
 import Data.Foldable (sum)
 import Data.Int (toNumber)
+import Data.Traversable (sequence)
 import Data.Tuple (Tuple(..))
 import Math (abs, round)
-import Test.QuickCheck (QC, Result(..), quickCheck, quickCheck', (/==), (<?>), (===))
-import Test.QuickCheck.Gen (Gen, chooseInt)
+import Test.QuickCheck (class Arbitrary, QC, Result(..), arbitrary, quickCheck, quickCheck', (/==), (<?>), (===))
+import Test.QuickCheck.Gen (Gen, chooseInt, vectorOf)
 
 checkInverse :: Matrix -> Matrix
 checkInverse m = matProduct m (inverse m)
@@ -18,7 +19,14 @@ checkDeterminant m = d == det
   where
     cfm = cofactorM m
     d = determinant m
-    det = sum $ Arr.zipWith (*) (getTop cfm) (getTop m)
+    det = sum $ A.zipWith (*) (getTop cfm) (getTop m)
+
+matrixOf :: forall a. Arbitrary a => Int -> Int -> Gen (MatrixF a)
+matrixOf rows cols = do
+  Matrix <$> sequence (A.replicate rows $ vectorOf cols $ arbitrary :: Gen a)
+
+sqmatrixOf :: forall a. Arbitrary a => Int -> Gen (MatrixF a)
+sqmatrixOf size = matrixOf size size
 
 mint :: Array (Array Int) -> Matrix
 mint = map toNumber <<< mkMatrix
@@ -32,7 +40,7 @@ m6 :: Matrix
 m6 = mint [[0,0,0,0,0,1],[1,1,1,1,1,1],[5,4,3,2,1,0],[0,0,0,0,1,0],[0,0,0,2,0,0],[2,0,1,6,2,0,0]]
 
 joinR :: Array Result -> Result
-joinR = Arr.foldr acc Success
+joinR = A.foldr acc Success
   where
     acc Success Success = Success
     acc Success f = f
@@ -70,7 +78,7 @@ checkSquare sq =
     det = determinant sq
     cfm = cofactorM sq
     inv = inverse sq
-    idn = mapWithIndices (\i j _ -> if i == j then 1.0 else 0.0) sq
+    idn = identity rows
     shwm = show sq
     left = matProduct inv sq
     right = matProduct sq inv
@@ -78,7 +86,7 @@ checkSquare sq =
       -- 1x1 matrix has no real cofactors
       if rows == 1 then []
       else zipWith (*) sq cfm # unMatrix
-    rowtests = partialdets # Arr.mapWithIndex
+    rowtests = partialdets # A.mapWithIndex
       \i row -> approxEq' det (sum row)
         <??> \_-> "Row " <> show i <> " did not sum up to determinant: "
           <> "det " <> show sq <> " = " <> show det <> " != sum " <> show row <> " = " <> show (sum row)
@@ -116,7 +124,7 @@ testSquareIgnore = do
       l <- chooseInt 0 (max-1)
       pure $ Ignore k l $ Ignore i j sq
     _ -> pure sq
-  pure (joinR (checkSquare sqi <> map (_ $ sqi) ops))
+  pure (joinR (map (_ $ sqi) ops <> checkSquare sqi))
 
 ops :: Array (Matrix -> Result)
 ops =

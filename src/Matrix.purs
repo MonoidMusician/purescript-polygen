@@ -1,18 +1,15 @@
 module Main.Matrix where
 
 import Prelude
-import Data.Array as Arr
+import Data.Array as A
 import Data.List as List
 import Data.Array ((!!), (..))
 import Data.Foldable (class Foldable, fold, foldMap, foldMapDefaultL, foldl, foldr, minimum, sum)
 import Data.Int (odd)
 import Data.List (List(..), (:))
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
-import Data.Traversable (class Traversable, sequence, sequenceDefault, traverse)
+import Data.Traversable (class Traversable, sequenceDefault, traverse)
 import Data.Tuple (Tuple(..), fst, snd)
-import Test.QuickCheck (arbitrary)
-import Test.QuickCheck.Arbitrary (class Arbitrary)
-import Test.QuickCheck.Gen (Gen, chooseInt, vectorOf)
 
 data MatrixF a = Matrix (Array (Array a)) | Ignore Int Int (MatrixF a)
 type Matrix = MatrixF Number
@@ -24,19 +21,6 @@ instance eqMatrixF :: Eq a => Eq (MatrixF a) where
   eq (Ignore i j a) (Ignore k l b)
     | i == k && j == l && a == b = true
   eq a b = unMatrix a == unMatrix b
-
-instance arbitraryMatrix :: Arbitrary a => Arbitrary (MatrixF a) where
-  arbitrary = do
-    rows <- chooseInt 1 5
-    cols <- chooseInt 1 5
-    matrixOf rows cols
-
-matrixOf :: forall a. Arbitrary a => Int -> Int -> Gen (MatrixF a)
-matrixOf rows cols = do
-  Matrix <$> sequence (Arr.replicate rows (vectorOf cols (arbitrary :: Gen a)))
-
-sqmatrixOf :: forall a. Arbitrary a => Int -> Gen (MatrixF a)
-sqmatrixOf size = matrixOf size size
 
 instance matrixFunctor :: Functor MatrixF where
   map f (Matrix m) = Matrix $ map (map f) m
@@ -56,39 +40,46 @@ instance matrixFoldable :: Foldable MatrixF where
   foldMap f (Matrix m) = fold (foldMap (map f) m)
   foldMap f m = foldMapDefaultL f m
 
-fixidx :: Int -> Int -> Int
-fixidx eye i = if i < eye then i else i + 1
+instance matrixTraversable :: Traversable MatrixF where
+  traverse f (Matrix m) = Matrix <$> traverse (traverse f) m
+  traverse f (Ignore i j m) = Matrix <$> (traverse (traverse f) $ unMatrix m)
+  sequence = sequenceDefault
 
 get :: forall a. Int -> Int -> MatrixF a -> Maybe a
 get i j (Matrix m) =
   m !! i >>= (_ !! j)
 get i j (Ignore eye jay m) =
   get (fixidx eye i) (fixidx jay j) m
+  where
+    fixidx ignored idx = if idx < ignored then idx else idx + 1
+
+gets :: forall a. Array (Tuple Int Int) -> MatrixF a -> Array a
+gets ijs m =
+  fromMaybe [] $ traverse (\(Tuple i j) -> get i j m) ijs
 
 zipWith :: forall a b c. (a -> b -> c) -> MatrixF a -> MatrixF b -> MatrixF c
-zipWith f (Matrix a) (Matrix b) = Matrix $ Arr.zipWith (Arr.zipWith f) a b
-zipWith f ma mb = Matrix $ Arr.zipWith (Arr.zipWith f) a b
-  where
-    a = unMatrix ma
-    b = unMatrix mb
+zipWith f (Matrix a) (Matrix b) = Matrix $ A.zipWith (A.zipWith f) a b
+zipWith f ma mb = Matrix $ A.zipWith (A.zipWith f) a b
+  where a = unMatrix ma
+        b = unMatrix mb
 
 zip :: forall a b. MatrixF a -> MatrixF b -> MatrixF (Tuple a b)
 zip = zipWith Tuple
 
 fill :: forall a. a -> Int -> Int -> MatrixF a
 fill n r c =
-  Matrix $ Arr.replicate r $ Arr.replicate c n
+  Matrix $ A.replicate r $ A.replicate c n
 
-zeros :: forall n. Semiring n => Int -> Int -> MatrixF n
+build :: forall a. (Int -> Int -> a) -> Int -> Int -> MatrixF a
+build f r c =
+  Matrix $ map (\i -> map (f i) $ A.range 0 (c-1)) $ A.range 0 (r-1)
+
+zeros :: forall r. Semiring r => Int -> Int -> MatrixF r
 zeros = fill zero
 
-identity :: forall n. Semiring n => Int -> MatrixF n
-identity sz = fill one sz sz
-
-instance matrixTraversable :: Traversable MatrixF where
-  traverse f (Matrix m) = Matrix <$> traverse (traverse f) m
-  traverse f (Ignore i j m) = Matrix <$> (traverse (traverse f) $ unMatrix m)
-  sequence = sequenceDefault
+identity :: forall r. Semiring r => Int -> MatrixF r
+identity sz =
+  build (\i j -> if i == j then one else zero) sz sz
 
 mkMatrix :: forall a. Array (Array a) -> MatrixF a
 mkMatrix = Matrix
@@ -97,26 +88,34 @@ unMatrix :: forall a. MatrixF a -> Array (Array a)
 unMatrix (Matrix m) = m
 unMatrix (Ignore i j m) =
   map (tryDeleteAt j) $ tryDeleteAt i $ unMatrix m
+  where
+    tryDeleteAt :: forall b. Int -> Array b -> Array b
+    tryDeleteAt l as = A.deleteAt l as # fromMaybe as
 
 reMatrix :: forall a. MatrixF a -> MatrixF a
 reMatrix = mkMatrix <<< unMatrix
 
-tryDeleteAt :: forall a. Int -> Array a -> Array a
-tryDeleteAt i as = Arr.deleteAt i as # fromMaybe as
+unpack2x2 :: forall a. MatrixF a -> Array a
+unpack2x2 m | dim m == Tuple 2 2 = gets
+  [ Tuple 0 0, Tuple 0 1
+  , Tuple 1 0, Tuple 1 1 ] m
+unpack2x2 _ = []
 
 dim :: forall a. MatrixF a -> Tuple Int Int
-dim (Matrix m) = Tuple (Arr.length m) (fromMaybe 0 $ minimum $ map Arr.length m)
-dim (Ignore i j m) = dim m - Tuple 1 1
+dim (Matrix m) =
+  Tuple (A.length m) (fromMaybe 0 $ minimum $ map A.length m)
+dim (Ignore i j m) =
+  dim m - Tuple 1 1
 
-altSum :: forall a. Ring a => Array a -> a
+altSum :: forall r. Ring r => Array r -> r
 altSum = foldr (-) zero
 
 mapTop :: forall a b. (MatrixF a -> a -> b) -> MatrixF a -> Array b
 mapTop f m =
-  Arr.mapWithIndex (\i -> f (Ignore 0 i m)) $ getTop m
+  A.mapWithIndex (\i -> f (Ignore 0 i m)) $ getTop m
 
 getTop :: forall a. MatrixF a -> Array a
-getTop m = Arr.mapMaybe (\i -> get 0 i m) (0..fst (dim m))
+getTop m = A.mapMaybe (\i -> get 0 i m) (0..fst (dim m))
 
 mapWithIndices :: forall a b. (Int -> Int -> a -> b) -> MatrixF a -> MatrixF b
 mapWithIndices f m = list2mat $ go 0 0 (Nil : Nil)
@@ -128,79 +127,71 @@ mapWithIndices f m = list2mat $ go 0 0 (Nil : Nil)
       if j == cols - 1
         then go (i+1) 0 (get i j m # appRow b (f i j))
         else go i (j+1) (get i j m # appCol b (f i j))
-    appRow :: List (List b) -> (a -> b) -> Maybe a -> List (List b)
-    appRow b g mn = fromMaybe b do
-      n <- mn
-      { head, tail } <- List.uncons b
-      pure (Nil : (g n:head) : tail)
-    appCol :: List (List b) -> (a -> b) -> Maybe a -> List (List b)
+    appRow b g mn = Nil : appCol b g mn
     appCol b g mn = fromMaybe b do
       n <- mn
       { head, tail } <- List.uncons b
       pure ((g n:head) : tail)
     conv :: forall c. List c -> Array c
-    conv = Arr.reverse <<< Arr.fromFoldable
+    conv = A.reverse <<< A.fromFoldable
     list2mat = Matrix <<< map conv <<< conv
 
-sign :: forall n. Ring n => Int -> Int -> n
+sign :: forall r. Ring r => Int -> Int -> r
 sign i j | odd (i+j) = negate one
 sign _ _ = one
 
-signed :: forall n. Ring n => Int -> Int -> n -> n
+signed :: forall r. Ring r => Int -> Int -> r -> r
 signed i j n = n * sign i j
 
-determinant :: forall n. Ring n => MatrixF n -> n
+determinant2x2 :: forall r. Ring r => r -> r -> r -> r -> r
+determinant2x2 a b c d = a*d - b*c
+
+determinant :: forall r. Ring r => MatrixF r -> r
 determinant m =
   case dim m of
     Tuple 0 0 -> zero
     Tuple 1 1 -> fromMaybe zero $ get 0 0 m
-    Tuple 2 2 -> fromMaybe zero $ do
-      a <- get 0 0 m
-      b <- get 0 1 m
-      c <- get 1 0 m
-      d <- get 1 1 m
-      pure (a*d - b*c)
+    Tuple 2 2 -> case unpack2x2 m of
+      [a,b,c,d] -> determinant2x2 a b c d
+      _ -> zero
     Tuple r c | r /= c -> zero
     _ -> altSum $ mapTop calccell m
 
-calccell :: forall n. Ring n => MatrixF n -> n -> n
+calccell :: forall r. Ring r => MatrixF r -> r -> r
 calccell m d = d * determinant m
 
-cofactorM :: forall n. Ring n => MatrixF n -> MatrixF n
+cofactorM :: forall r. Ring r => MatrixF r -> MatrixF r
 cofactorM m = mapWithIndices (\i j _ -> sign i j * determinant (Ignore i j m)) m
 
-inverse :: forall n. EuclideanRing n => MatrixF n -> MatrixF n
+inverse :: forall r. EuclideanRing r => MatrixF r -> MatrixF r
 inverse m
   | dim m == Tuple 1 1
   , Just v <- get 0 0 m
     = mkMatrix [[one/v]]
 inverse m
-  | dim m == Tuple 2 2
-  , Just a <- get 0 0 m
-  , Just b <- get 0 1 m
-  , Just c <- get 1 0 m
-  , Just d <- get 1 1 m
-    = let s = one/(a*d - b*c)
+  | [a, b, c, d] <- unpack2x2 m
+    = let s = one / determinant2x2 a b c d
           z = negate s
       in mkMatrix [[s*d,z*b],[z*c,s*a]]
 inverse m = map (_ / det) $ transpose $ cfm
   where
     cfm = cofactorM m
-    det = sum $ Arr.zipWith (*) (getTop cfm) (getTop m)
+    det = sum $ A.zipWith (*) (getTop cfm) (getTop m)
 
 row :: forall a. Int -> MatrixF a -> Array a
 row i m = fromMaybe [] $ unMatrix m !! i
 
 col :: forall a. Int -> MatrixF a -> Array a
-col j m = Arr.mapMaybe (_ !! j) $ unMatrix m
+col j m = A.mapMaybe (_ !! j) $ unMatrix m
 
 transpose :: forall a. MatrixF a -> MatrixF a
-transpose m = Matrix $ Arr.range 0 (snd (dim m) - 1) # map (flip col m)
+transpose m =
+  Matrix $ A.range 0 (snd (dim m) - 1) # map (flip col $ reMatrix m)
 
-dotProduct :: forall n. Semiring n => Array n -> Array n -> n
-dotProduct a b = sum $ Arr.zipWith (*) a b
+dotProduct :: forall r. Semiring r => Array r -> Array r -> r
+dotProduct a b = sum $ A.zipWith (*) a b
 
-matProduct :: forall n. Semiring n => MatrixF n -> MatrixF n -> MatrixF n
+matProduct :: forall r. Semiring r => MatrixF r -> MatrixF r -> MatrixF r
 matProduct m n =
   let trn = unMatrix $ transpose n
   in mkMatrix $ map ((flip map trn) <<< dotProduct) $ unMatrix m
