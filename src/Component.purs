@@ -1,6 +1,17 @@
 module Main.Component where
 
+import Control.Monad.Aff (Aff)
+import DOM (DOM)
+import Data.Array (cons, drop, head, intercalate, length, replicate, singleton, tail, take, zip)
 import Data.Array as Arr
+import Data.Either (Either(..), isLeft)
+import Data.Lens.Iso.Newtype (_Newtype)
+import Data.Lens.Record (prop)
+import Data.Lens.Suggestion (Lens', lens)
+import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Rational (Rational, toNumber)
+import Data.Rational.Farey (fromNumber)
+import Data.Symbol (SProxy(..))
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
@@ -11,15 +22,6 @@ import Halogen.HTML.Lens.Input as HL.Input
 import Halogen.HTML.Lens.Int as HL.Int
 import Halogen.HTML.Lens.Number as HL.Number
 import Halogen.HTML.Properties as HP
-import Control.Monad.Aff (Aff)
-import DOM (DOM)
-import Data.Array (cons, drop, head, intercalate, length, replicate, singleton, tail, take, zip)
-import Data.Either (Either(..), isLeft)
-import Data.Lens.Iso.Newtype (_Newtype)
-import Data.Lens.Record (prop)
-import Data.Lens.Suggestion (Lens', lens)
-import Data.Maybe (Maybe(..), fromMaybe)
-import Data.Symbol (SProxy(..))
 import Main.Matrix (Matrix, mkMatrix, unMatrix, inverse, matProduct)
 import Main.PolyBuilder (PolyBuilder)
 import Main.Polynomials (Atom, Polynomial, Row, Table, disp, evalAt, gather, genp, lookupIn, mkRow, mkSpecialized, mkTable, nthderivative, parseLinear, substitute, zeroRow)
@@ -55,10 +57,10 @@ type Computed = StateBase
   , conditions :: ConditionsPlus
   , params :: Array Atom
   , values :: Array Atom
-  , coefficientM :: Matrix Number
-  , valueM :: Matrix Number
-  , coefficientMI :: Matrix Number
-  , productM :: Matrix Number
+  , coefficientM :: Matrix Rational
+  , valueM :: Matrix Rational
+  , coefficientMI :: Matrix Rational
+  , productM :: Matrix Rational
   , result :: Table
   )
 
@@ -175,11 +177,11 @@ rowTable rows =
       psm # map \ps ->
         [show (i+1) <> "."] <> listWith ps params <> ["="] <> listWith vs values
 
-toMatrix :: Array Atom -> Array Row -> Matrix Number
-toMatrix values rows = mkMatrix $ map (\r -> map (lookupIn r) values) rows
+toMatrix :: Array Atom -> Array Row -> Matrix Rational
+toMatrix values rows = mkMatrix $ map (\r -> map (lookupIn r >>> fromNumber) values) rows
 
-fromMatrix :: Array Atom -> Matrix Number -> Array Row
-fromMatrix values matrix = map (mkRow <<< zip values) $ unMatrix matrix
+fromMatrix :: Array Atom -> Matrix Rational -> Array Row
+fromMatrix values matrix = map (mkRow <<< zip values <<< map toNumber) $ unMatrix matrix
 
 compute :: State -> Computed
 compute { derivative, position, value, conditions: cs } =
