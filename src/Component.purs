@@ -2,12 +2,13 @@ module Main.Component where
 
 import Control.Monad.Aff (Aff)
 import DOM (DOM)
-import Data.Array (intercalate, length, singleton, zip)
+import Data.Array (intercalate, singleton, zip)
 import Data.Array as Arr
-import Data.Either (Either(..), isLeft)
+import Data.Either (Either(..))
 import Data.Lens.Record (prop)
 import Data.Lens.Suggestion (Lens')
 import Data.Maybe (Maybe(..))
+import Data.Newtype (wrap)
 import Data.Rational (Rational, toNumber)
 import Data.Rational.Farey (fromNumber)
 import Data.Symbol (SProxy(..))
@@ -22,20 +23,34 @@ import Halogen.HTML.Lens.Int as HL.Int
 import Halogen.HTML.Lens.Number as HL.Number
 import Halogen.HTML.Properties as HP
 import Main.Matrix (Matrix, mkMatrix, unMatrix, inverse, matProduct)
-import Main.Polynomials (Atom, Polynomial, Row, Table, disp, evalAt, gather, genp, lookupIn, mkRow, mkSpecialized, mkTable, nthderivative, parseLinear, substitute, zeroRow)
+import Main.Polynomials (Atom, Polynomial, Row, Table, constant, disp, evalAt, gather, genp, lookupIn, mkRow, mkSpecialized, mkTable, nthderivative, parseLinear, substitute, zeroRow)
 import Prelude hiding (degree)
 
-type Query = HL.Query State
-type Element p = H.HTML p Query
-type LensComponent = forall p. Computed -> State -> Element p
+type AffDOM eff = Aff ( dom :: DOM | eff )
 
-type StateBase r =
+data Query a
+  = UpdateState (HL.Query State a)
+  | InsertCondition Condition a
+
+data Subquery a
+  = UpdateSubstate (HL.Query Substate a)
+  | AddCondition a
+
+type Submessage = Condition
+
+data Slot = AddingSlot
+derive instance eqSlot :: Eq Slot
+derive instance ordSlot :: Ord Slot
+
+type Element p = H.HTML p Query
+type LensComponent = forall p. Substate -> H.HTML p Subquery
+
+type Substate =
   { derivative :: Int
   , position :: Number
   , value :: String
-  | r
   }
-type State = StateBase (conditions :: Conditions)
+type State = Conditions
 type Conditions = Array Condition
 type ConditionBase r =
   { derivative :: Int
@@ -50,7 +65,7 @@ type ConditionPlus =
     )
 type ConditionsPlus = Array ConditionPlus
 type Condition = ConditionBase ()
-type Computed = StateBase
+type Computed = Record
   ( polynomial :: Polynomial
   , conditions :: ConditionsPlus
   , params :: Array Atom
@@ -62,33 +77,21 @@ type Computed = StateBase
   , result :: Table
   )
 
-_derivative :: Lens' State Int
+_derivative :: Lens' Substate Int
 _derivative = prop (SProxy :: SProxy "derivative")
 
-_position :: Lens' State Number
+_position :: Lens' Substate Number
 _position = prop (SProxy :: SProxy "position")
 
-_value :: Lens' State String
+_value :: Lens' Substate String
 _value = prop (SProxy :: SProxy "value")
 
-addCondition :: State -> State
-addCondition state@{ derivative, position, value: val, conditions } =
-  case parseLinear val of
-    Right value -> state
-      { conditions = conditions <>
-          [{derivative
-          , position
-          , value
-          }]
-      }
-    _ -> state
-
 derivativeComponent :: LensComponent
-derivativeComponent { derivative, conditions, polynomial } state =
+derivativeComponent state@{ derivative } =
   HH.div_
-    [ HL.Int.renderBounded (Just 0) (Just (length conditions)) _derivative state
+    [ map UpdateSubstate $ HL.Int.renderBounded (Just 0) (Just 20) _derivative state
     , HH.text (suff <> " derivative: ")
-    , HH.text $ show $ nthderivative derivative polynomial
+    --, HH.text $ show $ nthderivative derivative polynomial
     ]
   where
     suff = case derivative of
@@ -102,20 +105,19 @@ evalRow polynomial { position, derivative } =
   evalAt position $ nthderivative derivative polynomial
 
 positionComponent :: LensComponent
-positionComponent { polynomial } state =
+positionComponent state{- polynomial -} =
   HH.div_
     [ HH.text "evaluated at x = "
-    , HL.Number.renderBounded (Just (-10.0)) (Just 10.0) _position state
-    , HH.text (": " <> show (evalRow polynomial state))
+    , map UpdateSubstate $ HL.Number.renderBounded (Just (-10.0)) (Just 10.0) _position state
+    --, HH.text (": " <> show (evalRow polynomial state))
     ]
 
 valueComponent :: LensComponent
-valueComponent { derivative, position, value } state =
+valueComponent state@{ derivative, position, value } =
   HH.div_
     [ HH.text "should equal "
-    , HL.Input.render _value state
+    , map UpdateSubstate $ HL.Input.render _value state
     , HH.text (": " <> evalue)
-    , HH.div_ [ HL.Button.renderAsField "Add condition" addCondition (isLeft parsed) ]
     ]
   where
     parsed = parseLinear value
@@ -139,8 +141,9 @@ nonTrivials = Arr.filter (not trivial)
 
 rowTable :: forall p. ConditionsPlus -> Element p
 rowTable rows =
-  HH.div_ $ map (HH.tr_ <<< map (HH.td_ <<< Arr.singleton <<< HH.text))
-    (_header Arr.: _rows)
+  HH.table [ HP.class_ $ wrap "row-table"]
+    $ map (HH.tr_ <<< map (HH.td_ <<< Arr.singleton <<< HH.text))
+        (_header Arr.: _rows)
   where
     listWith r = map (lookupIn r >>> disp)
     params = gather $ Arr.catMaybes $ map _.parameters rows
@@ -159,9 +162,8 @@ fromMatrix :: Array Atom -> Matrix Rational -> Array Row
 fromMatrix values matrix = map (mkRow <<< zip values <<< map toNumber) $ unMatrix matrix
 
 compute :: State -> Computed
-compute { derivative, position, value, conditions: cs } =
-    { derivative, position, value
-    , polynomial, conditions
+compute cs =
+    { polynomial, conditions
     , params, values
     , coefficientM, valueM
     , coefficientMI, productM
@@ -189,9 +191,56 @@ compute { derivative, position, value, conditions: cs } =
     productM = coefficientMI `matProduct` valueM
     result = mkTable $ zip params $ fromMatrix values productM
 
-component :: forall eff. H.Component HH.HTML Query Unit Void (Aff (dom :: DOM | eff))
-component =
+addingComponent :: forall eff. H.Component HH.HTML Subquery Unit Submessage (AffDOM eff)
+addingComponent =
   H.component
+    { initialState: const initialState
+    , render
+    , eval
+    , receiver: const Nothing
+    }
+  where
+
+  initialState :: Substate
+  initialState =
+    { derivative: 0
+    , position: 0.0
+    , value: "0"
+    }
+
+  render :: Substate -> H.ComponentHTML Subquery
+  render substate@{ derivative, position, value } =
+    HH.div
+      [ HP.class_ $ wrap "adding-component" ]
+      [ HH.h3_ [ HH.text "Add property" ]
+      , derivativeComponent substate
+      , positionComponent substate
+      , valueComponent substate
+      , HH.div_ [ HH.text (showf substate <> " = " <> value)]
+      , HH.button [ HE.onClick (HE.input_ AddCondition) ]
+          [ HH.text "Add property" ]
+      ]
+
+  -- parseLinear
+  eval :: Subquery ~> H.ComponentDSL Substate Subquery Submessage (AffDOM eff)
+  eval (UpdateSubstate (HL.UpdateState run next)) = do
+    reset <- H.liftEff run
+    H.modify reset
+    pure next
+  eval (AddCondition a) = do
+    state@{ value: val } <- H.get
+    case parseLinear val of
+      Right value -> H.raise state { value = value }
+      Left _ -> pure unit
+    pure a
+
+showf :: forall r. { derivative :: Int, position :: Number | r } -> String
+showf { derivative: d, position: p } =
+  "f" <> genp d <> "(" <> show p <> ")"
+
+component :: forall eff. H.Component HH.HTML Query Unit Void (AffDOM eff)
+component =
+  H.parentComponent
     { initialState: const initialState
     , render
     , eval
@@ -201,30 +250,31 @@ component =
 
   initialState :: State
   initialState =
-    { derivative: 0
-    , position: 0.0
-    , value: "0"
-    , conditions: []
-    }
+    [ { derivative: 0, position: 0.0, value: zeroRow }
+    , { derivative: 0, position: 1.0, value: constant 1.0 }
+    , { derivative: 1, position: 0.0, value: zeroRow }
+    , { derivative: 1, position: 1.0, value: zeroRow }
+    , { derivative: 2, position: 0.0, value: zeroRow }
+    , { derivative: 2, position: 1.0, value: zeroRow }
+    ]
 
-  render :: State -> H.ComponentHTML Query
+  render :: State -> H.ParentHTML Query Subquery Slot (AffDOM eff)
   render state =
     HH.div_
       [ HH.h1_
           [ HH.text "Create a Polynomial" ]
       , HH.h2_
           [ HH.text "which satisfies certain properties" ]
+      , HH.slot AddingSlot addingComponent unit (HE.input InsertCondition)
       , HH.div_ [ HH.text ("f(x) = " <> show polynomial) ]
-      , derivativeComponent computed state
-      , positionComponent computed state
-      , valueComponent computed state
-      , HH.div_ [ HH.text (showf computed <> " = " <> value)]
+      , HH.br_
       , HH.div_ $ map (HH.div_ <<< singleton) $ conditions # map
           case _ of
             c@{ parameters: Just ps } ->
               HH.text $ showf c <> " = " <> show ps <> " = " <> show c.value
             c ->
               HH.text $ showf c <> " = " <> show c.value
+      , HH.br_
       , rowTable $ conditions
       , HH.div_
           [ HH.text $ show result
@@ -234,19 +284,21 @@ component =
       ]
       where
         computed@
-          { derivative, position, value
-          , polynomial, conditions
+          { polynomial, conditions
           , params, values
           , coefficientM, valueM
           , coefficientMI, productM
           , result
           } = compute state
-        showf :: forall r. { derivative :: Int, position :: Number | r } -> String
-        showf { derivative: d, position: p } =
-          "f" <> genp d <> "(" <> show p <> ")"
 
-  eval :: Query ~> H.ComponentDSL State Query Void (Aff (dom :: DOM | eff))
-  eval = HL.eval
+  eval :: Query ~> H.ParentDSL State Query Subquery Slot Void (AffDOM eff)
+  eval (UpdateState (HL.UpdateState run next)) = do
+    reset <- H.liftEff run
+    H.modify reset
+    pure next
+  eval (InsertCondition c a) = do
+    H.modify (_ <> [c])
+    pure a
 
 separate :: forall p i. HH.HTML p i -> Array (HH.HTML p i) -> HH.HTML p i
 separate sep = HH.span_ <<< intercalate [sep] <<< map Arr.singleton
