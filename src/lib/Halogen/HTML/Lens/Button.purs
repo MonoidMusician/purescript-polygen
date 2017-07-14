@@ -7,19 +7,14 @@ module Halogen.HTML.Lens.Button
     ) where
 
 import Prelude
-import DOM.Event.Event as Event
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Control.Monad.Eff (Eff)
-import Control.Monad.Except (runExcept)
 import DOM (DOM)
-import DOM.Event.Types (MouseEvent, mouseEventToEvent)
-import DOM.HTML.Types (readHTMLInputElement)
+import DOM.Event.Types (MouseEvent)
 import Data.Array (singleton)
-import Data.Either (Either(..))
-import Data.Foreign (toForeign)
 import Halogen.HTML.Lens (Query(..))
 
 type Property s p = H.IProp p (Query s)
