@@ -2,13 +2,12 @@ module Main.Component where
 
 import Control.Monad.Aff (Aff)
 import DOM (DOM)
-import Data.Array (cons, drop, head, intercalate, length, replicate, singleton, tail, take, zip)
+import Data.Array (intercalate, length, singleton, zip)
 import Data.Array as Arr
 import Data.Either (Either(..), isLeft)
-import Data.Lens.Iso.Newtype (_Newtype)
 import Data.Lens.Record (prop)
-import Data.Lens.Suggestion (Lens', lens)
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Lens.Suggestion (Lens')
+import Data.Maybe (Maybe(..))
 import Data.Rational (Rational, toNumber)
 import Data.Rational.Farey (fromNumber)
 import Data.Symbol (SProxy(..))
@@ -23,7 +22,6 @@ import Halogen.HTML.Lens.Int as HL.Int
 import Halogen.HTML.Lens.Number as HL.Number
 import Halogen.HTML.Properties as HP
 import Main.Matrix (Matrix, mkMatrix, unMatrix, inverse, matProduct)
-import Main.PolyBuilder (PolyBuilder)
 import Main.Polynomials (Atom, Polynomial, Row, Table, disp, evalAt, gather, genp, lookupIn, mkRow, mkSpecialized, mkTable, nthderivative, parseLinear, substitute, zeroRow)
 import Prelude hiding (degree)
 
@@ -72,29 +70,6 @@ _position = prop (SProxy :: SProxy "position")
 
 _value :: Lens' State String
 _value = prop (SProxy :: SProxy "value")
-
-expand :: forall a. a -> Array a -> Int -> Array a
-expand pad array to = replicate d pad <> drop (-d) array
-  where
-    l = length array
-    d = to - l
-
-expand' :: forall a. a -> Array a -> Int -> Array a
-expand' pad array to = take to array <> replicate (to - length array) pad
-
-_offbyone :: Lens' Int Int
-_offbyone = lens (_-1) \_ -> (_+1)
-
-_degree :: Lens' PolyBuilder Int
-_degree = _Newtype <<< lens length (expand' true) <<< _offbyone
-
-_origin :: Lens' PolyBuilder Boolean
-_origin = _Newtype <<< lens
-  (\poly -> case head poly of
-    Just true -> false
-    _ -> true
-  )
-  (\poly origin -> fromMaybe poly (cons (not origin) <$> tail poly))
 
 addCondition :: State -> State
 addCondition state@{ derivative, position, value: val, conditions } =
