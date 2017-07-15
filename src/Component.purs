@@ -11,8 +11,7 @@ import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), maybe)
 import Data.Newtype (class Newtype, wrap)
-import Data.Rational (Rational, toNumber)
-import Data.Rational.Farey (fromNumber)
+import Data.Rational.Big (BigRational, toNumber, fromNumber)
 import Data.String (joinWith)
 import Data.Symbol (SProxy(..))
 import Data.Tuple (Tuple(..))
@@ -85,10 +84,10 @@ type Computed = Record
   , conditions :: ConditionsPlus
   , params :: Array Atom
   , values :: Array Atom
-  , coefficientM :: Matrix Rational
-  , valueM :: Matrix Rational
-  , coefficientMI :: Matrix Rational
-  , productM :: Matrix Rational
+  , coefficientM :: Matrix BigRational
+  , valueM :: Matrix BigRational
+  , coefficientMI :: Matrix BigRational
+  , productM :: Matrix BigRational
   , result :: Table
   )
 
@@ -183,10 +182,10 @@ rowTable rows =
       psm # map \ps ->
         [show (i+1) <> "."] <> listWith ps params <> ["="] <> listWith vs values
 
-toMatrix :: Array Atom -> Array Row -> Matrix Rational
+toMatrix :: Array Atom -> Array Row -> Matrix BigRational
 toMatrix values rows = mkMatrix $ map (\r -> map (lookupIn r >>> fromNumber) values) rows
 
-fromMatrix :: Array Atom -> Matrix Rational -> Array Row
+fromMatrix :: Array Atom -> Matrix BigRational -> Array Row
 fromMatrix values matrix = map (mkRow <<< zip values <<< map toNumber) $ unMatrix matrix
 
 compute :: State -> Computed
