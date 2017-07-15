@@ -1,10 +1,16 @@
 module Main.Component where
 
 import Control.Monad.Aff (Aff)
+import Control.Monad.Eff (Eff)
 import DOM (DOM)
+import DOM.Node.ParentNode (QuerySelector(..))
 import Data.Array (intercalate, zip)
 import Data.Array as Arr
+import Data.Const (Const)
 import Data.Either (Either(..))
+import Data.Either.Nested (Either2)
+import Data.Function.Uncurried (Fn2)
+import Data.Functor.Coproduct.Nested (type (<\/>))
 import Data.Lens.Record (prop)
 import Data.Lens.Suggestion (Lens')
 import Data.Map (Map)
@@ -16,6 +22,7 @@ import Data.String (joinWith)
 import Data.Symbol (SProxy(..))
 import Data.Tuple (Tuple(..))
 import Halogen as H
+import Halogen.Component.ChildPath (cp1, cp2)
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Lens as HL
@@ -26,7 +33,7 @@ import Halogen.HTML.Lens.Int as HL.Int
 import Halogen.HTML.Lens.Number as HL.Number
 import Halogen.HTML.Properties as HP
 import Main.Matrix (Matrix, mkMatrix, unMatrix, inverse, matProduct)
-import Main.Polynomials (Atom, Polynomial, Row, Table, constant, disp, evalAt, gather, genp, lookupIn, mkRow, mkSpecialized, mkTable, nthderivative, parseLinear, substitute, zeroRow)
+import Main.Polynomials (Atom, Polynomial, Row, Table, showcode, constant, disp, evalAt, gather, genp, lookupIn, mkRow, mkSpecialized, mkTable, nthderivative, parseLinear, substitute, zeroRow)
 import Prelude hiding (degree)
 
 type AffDOM eff = Aff ( dom :: DOM | eff )
@@ -41,9 +48,8 @@ data Subquery a
 
 type Submessage = Condition
 
-data Slot = AddingSlot
-derive instance eqSlot :: Eq Slot
-derive instance ordSlot :: Ord Slot
+type ChildrenQuery = Subquery <\/> GraphQuery <\/> Const Void
+type Slot = Either2 Unit Unit
 
 type Element p = H.HTML p Query
 type LensComponent = forall p. Substate -> H.HTML p Subquery
@@ -89,6 +95,7 @@ type Computed = Record
   , coefficientMI :: Matrix BigRational
   , productM :: Matrix BigRational
   , result :: Table
+  , substituted :: Polynomial
   )
 
 _derivative :: Lens' Substate Int
@@ -194,7 +201,7 @@ compute cs =
     , params, values
     , coefficientM, valueM
     , coefficientMI, productM
-    , result
+    , result, substituted
     }
   where
     polynomial = mkSpecialized (Map.size cs) $ specialization $ clist cs
@@ -217,6 +224,7 @@ compute cs =
     coefficientMI = inverse coefficientM
     productM = coefficientMI `matProduct` valueM
     result = mkTable $ zip params $ fromMatrix values productM
+    substituted = substitute polynomial result
 
 addingComponent :: forall eff. H.Component HH.HTML Subquery Unit Submessage (AffDOM eff)
 addingComponent =
@@ -248,7 +256,6 @@ addingComponent =
           [ HH.text "Add property" ]
       ]
 
-  -- parseLinear
   eval :: Subquery ~> H.ComponentDSL Substate Subquery Submessage (AffDOM eff)
   eval (UpdateSubstate (HL.UpdateState run next)) = do
     reset <- H.liftEff run
@@ -285,14 +292,15 @@ component =
     , { derivative: 2, position: 1.0, value: zeroRow }
     ]
 
-  render :: State -> H.ParentHTML Query Subquery Slot (AffDOM eff)
+  render :: State -> H.ParentHTML Query ChildrenQuery Slot (AffDOM eff)
   render state =
     HH.div_
       [ HH.h1_
           [ HH.text "Create a Polynomial" ]
       , HH.h2_
           [ HH.text "which satisfies certain properties" ]
-      , HH.slot AddingSlot addingComponent unit (HE.input InsertCondition)
+      , HH.slot' cp1 unit addingComponent unit (HE.input InsertCondition)
+      , HH.slot' cp2 unit graphComponent unit absurd
       , HH.div_ [ HH.text ("f(x) = " <> show polynomial) ]
       , HH.br_
       , HH.div_ $ pure $ HH.text datapoints
@@ -303,7 +311,13 @@ component =
       , HH.div_
           [ HH.text $ show result
           , HH.br_
-          , HH.text $ show (substitute polynomial result)
+          , HH.text $ show substituted
+          ]
+      , HH.br_
+      , HH.pre_ $ pure $ HH.text $ Arr.intercalate "\n" $ showcode <$>
+          [ polynomial
+          , substituted
+          , nthderivative 1 substituted
           ]
       ]
       where
@@ -312,7 +326,7 @@ component =
           , params, values
           , coefficientM, valueM
           , coefficientMI, productM
-          , result
+          , result, substituted
           } = compute state
         conditionsDisplayed = conditions <#> removeIth
         showc = case _ of
@@ -341,14 +355,158 @@ component =
               # append [show position]
               # \vs -> "(" <> joinWith ", " vs <> ")"
 
-  eval :: Query ~> H.ParentDSL State Query Subquery Slot Void (AffDOM eff)
+  eval :: Query ~> H.ParentDSL State Query ChildrenQuery Slot Void (AffDOM eff)
   eval (UpdateState (HL.UpdateState run next)) = do
     reset <- H.liftEff run
     H.modify reset
+    p <- H.gets $ compute >>> _.substituted
+    _ <- H.query' cp2 unit $ H.action (SetPolynomial p)
     pure next
   eval (InsertCondition c a) = do
     H.modify $ ckey c # Map.alter (const (Just c.value))
+    p <- H.gets $ compute >>> _.substituted
+    _ <- H.query' cp2 unit $ H.action (SetPolynomial p)
     pure a
 
 separate :: forall p i. HH.HTML p i -> Array (HH.HTML p i) -> HH.HTML p i
 separate sep = HH.span_ <<< intercalate [sep] <<< map Arr.singleton
+
+type GraphState = Maybe Plot
+data GraphQuery a = Initialize a | SetPolynomial Polynomial a
+
+graphComponent :: forall eff. H.Component HH.HTML GraphQuery Unit Void (AffDOM eff)
+graphComponent =
+  H.lifecycleComponent
+    { initialState: const initialState
+    , render
+    , eval
+    , initializer: Just (H.action Initialize)
+    , finalizer: Nothing
+    , receiver: const Nothing
+    }
+  where
+
+  initialState :: GraphState
+  initialState = Nothing
+
+  render :: GraphState -> H.ComponentHTML GraphQuery
+  render _ =
+    HH.div
+      [ HP.id_ "graph" ]
+      []
+
+  eval :: GraphQuery ~> H.ComponentDSL GraphState GraphQuery Void (AffDOM eff)
+  eval (SetPolynomial p a) = do
+    H.get >>= case _ of
+      Nothing -> pure unit
+      Just graph -> H.liftEff do
+        let
+          graphData =
+            [{ graphType: "polyline"
+            , fn: showcode p
+            , derivative:
+                { fn: showcode (nthderivative 1 p)
+                , updateOnMouseMove: true
+                }
+            }]
+        setData graph graphData
+        draw graph
+    pure a
+  eval (Initialize a) = do
+    let
+      options =
+        {
+          target: wrap "#graph",
+          xAxis: {
+            "type": "linear",
+            domain: [0.0, 1.0],
+            invert: false,
+            label: ""
+          },
+          yAxis: {
+            "type": "linear",
+            domain: [0.0, 1.0],
+            invert: false,
+            label: ""
+          },
+          "data": [{
+            graphType: "polyline",
+            fn: "6.0*x^5 - 15.0*x^4 + 10.0*x^3",
+            derivative: {
+              fn: "30.0*x^4 - 60.0*x^3 + 30.0*x^2",
+              updateOnMouseMove: true
+            }
+          }]
+        }
+    plot <- H.liftEff $ functionPlot options
+    H.modify (const (Just plot))
+    pure a
+
+type AxisOptions =
+  { type :: String
+  , domain :: Array Number
+  , invert :: Boolean
+  , label :: String
+  }
+type Options =
+  ( target :: QuerySelector
+  , title :: String
+  , xAxis :: AxisOptions
+  , yAxis :: AxisOptions
+  , disableZoom :: Boolean
+  , grid :: Boolean
+  , tip ::
+      { xLine :: Boolean
+      , yLine :: Boolean
+      , renderer :: Fn2 Number Number String
+      }
+  , annotations :: Array
+      { x :: Number
+      , y :: Number
+      , text :: String
+      }
+  , "data" :: Data
+  )
+type Data = Array Datum
+type Datum =
+  { graphType :: String
+  , fn :: String
+  , derivative ::
+      { fn :: String
+      , updateOnMouseMove :: Boolean
+      }
+  }
+  {- title :: String
+  , skipTip :: Boolean
+  , range :: Array Number
+  , nSamples :: Int
+  , graphType :: String
+  , fnType :: String
+  , sampler :: String
+  -}
+
+foreign import data Plot :: Type
+foreign import functionPlotImpl ::
+  forall r eff. Record r -> Eff (dom :: DOM | eff) Plot
+functionPlot ::
+  forall r fill eff.
+    Union r fill Options =>
+  Record r -> Eff (dom :: DOM | eff) Plot
+functionPlot = functionPlotImpl
+
+foreign import setOptionsImpl ::
+  forall r eff. Plot -> Record r -> Eff (dom :: DOM | eff) Unit
+setOptions ::
+  forall r fill eff.
+    Union r fill Options =>
+  Plot -> Record r -> Eff (dom :: DOM | eff) Unit
+setOptions = setOptionsImpl
+
+foreign import setDataImpl ::
+  forall r eff. Plot -> Array (Record r) -> Eff (dom :: DOM | eff) Unit
+setData ::
+  forall r fill eff.
+  Plot -> Array (Record r) -> Eff (dom :: DOM | eff) Unit
+setData = setDataImpl
+
+foreign import draw :: forall eff. Plot -> Eff (dom :: DOM | eff) Unit

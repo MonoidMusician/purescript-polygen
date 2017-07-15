@@ -100,6 +100,26 @@ instance showPolynomial :: Show Polynomial where
       show2 ts@({ exponent } :| _) =
         "(" <> dispSum (ts # map \{ atom, coefficient } -> disp2 atom coefficient) <> ")" <> genx exponent
 
+showcode :: Polynomial -> String
+showcode (Polynomial []) = "0.0"
+showcode (Polynomial poly) = dispSum $ map show2 $ Arr.groupBy samexp poly
+  where
+    samexp { exponent: a } { exponent: b } = a == b
+    show1 { coefficient, atom, exponent } =
+      show coefficient <> "*" <> show atom
+    show2 ({ coefficient, atom, exponent: 0 } :| []) =
+      show coefficient <> case atom of
+        K -> ""
+        _ -> "*" <> show atom
+    show2 ({ coefficient: 1.0, atom, exponent } :| []) =
+      show atom <> "x^" <> show exponent
+    show2 (t@{ exponent } :| []) = show1 t <> "x^" <> show exponent
+    show2 ts@({ exponent } :| _) =
+      "(" <> dispSum (ts # map \{ atom, coefficient } ->
+        show coefficient <> case atom of
+          K -> ""
+          _ -> "*" <> show atom) <> ")*" <> "x^" <> show exponent
+
 build :: PolyBuilder -> Polynomial
 build (PolyBuilder poly) = Polynomial $ go poly c0 0 []
   where
