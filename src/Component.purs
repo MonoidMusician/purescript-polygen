@@ -2,16 +2,19 @@ module Main.Component where
 
 import Control.Monad.Aff (Aff)
 import DOM (DOM)
-import Data.Array (deleteAt, intercalate, mapWithIndex, zip)
+import Data.Array (intercalate, zip)
 import Data.Array as Arr
 import Data.Either (Either(..))
 import Data.Lens.Record (prop)
 import Data.Lens.Suggestion (Lens')
-import Data.Maybe (Maybe(..), fromMaybe)
-import Data.Newtype (wrap)
+import Data.Map (Map)
+import Data.Map as Map
+import Data.Maybe (Maybe(..))
+import Data.Newtype (class Newtype, wrap)
 import Data.Rational (Rational, toNumber)
 import Data.Rational.Farey (fromNumber)
 import Data.Symbol (SProxy(..))
+import Data.Tuple (Tuple(..), fst)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
@@ -50,21 +53,32 @@ type Substate =
   , position :: Number
   , value :: String
   }
-type State = Conditions
-type Conditions = Array Condition
-type ConditionBase r =
+type State = Map ConditionKey Row
+type ConditionKeyBase r =
   { derivative :: Int
   , position :: Number
-  , value :: Row
   | r
   }
+newtype ConditionKey = CKey (ConditionKeyBase ())
+derive instance newtypeConditionKey :: Newtype ConditionKey _
+instance eqConditionKey :: Eq ConditionKey where
+  eq = map (eq EQ) <$> compare
+instance ordConditionKey :: Ord ConditionKey where
+  compare (CKey l) (CKey r) =
+    comparing _.position l r
+      <> comparing _.derivative l r
+type ConditionBase r = ConditionKeyBase
+  ( value :: Row
+  | r
+  )
+type Condition = ConditionBase ()
+type Conditions = Array Condition
 type ConditionPlus =
   ConditionBase
     ( parameters :: Maybe Row
     , polynomial :: Polynomial
     )
 type ConditionsPlus = Array ConditionPlus
-type Condition = ConditionBase ()
 type Computed = Record
   ( polynomial :: Polynomial
   , conditions :: ConditionsPlus
@@ -86,8 +100,18 @@ _position = prop (SProxy :: SProxy "position")
 _value :: Lens' Substate String
 _value = prop (SProxy :: SProxy "value")
 
-removeCondition :: Int -> State -> State
-removeCondition i cs = deleteAt i cs # fromMaybe cs
+ckey :: forall r. ConditionKeyBase r -> ConditionKey
+ckey { derivative, position } = CKey { derivative, position }
+
+cvalue :: Tuple ConditionKey Row -> Condition
+cvalue (Tuple (CKey { derivative, position }) value) =
+  { derivative, position, value }
+
+clist :: State -> Conditions
+clist m = Arr.sortWith fst (Map.toUnfoldable m) <#> cvalue
+
+removeCondition :: ConditionKey -> State -> State
+removeCondition k = Map.delete k
 
 derivativeComponent :: LensComponent
 derivativeComponent state@{ derivative } =
@@ -173,8 +197,8 @@ compute cs =
     , result
     }
   where
-    polynomial = mkSpecialized (Arr.length cs) $ specialization cs
-    conditions = cs # map
+    polynomial = mkSpecialized (Map.size cs) $ specialization $ clist cs
+    conditions = clist cs # map
       \c@{ derivative: d, position: p, value: v } ->
         { derivative: d, position: p, value: v
         , polynomial
@@ -252,7 +276,7 @@ component =
   where
 
   initialState :: State
-  initialState =
+  initialState = Map.fromFoldable $ (\c -> Tuple (ckey c) c.value) <$>
     [ { derivative: 0, position: 0.0, value: zeroRow }
     , { derivative: 0, position: 1.0, value: constant 1.0 }
     , { derivative: 1, position: 0.0, value: zeroRow }
@@ -271,13 +295,7 @@ component =
       , HH.slot AddingSlot addingComponent unit (HE.input InsertCondition)
       , HH.div_ [ HH.text ("f(x) = " <> show polynomial) ]
       , HH.br_
-      , HH.div_ $ conditions # mapWithIndex
-          \i -> removeIth i $ HH.text <<< append " " <<<
-            case _ of
-              c@{ parameters: Just ps } ->
-                showf c <> " = " <> show ps <> " = " <> show c.value
-              c ->
-                showf c <> " = " <> show c.value
+      , HH.div_ $ conditionsDisplayed
       , HH.br_
       , rowTable $ conditions
       , HH.div_
@@ -294,11 +312,18 @@ component =
           , coefficientMI, productM
           , result
           } = compute state
-        removeIth i f c =
+        conditionsDisplayed = conditions <#> removeIth
+        showc = case _ of
+          c@{ parameters: Just ps } ->
+            showf c <> " = " <> show ps <> " = " <> show c.value
+          c ->
+            showf c <> " = " <> show c.value
+        removeIth c =
           HH.div_
             [ map UpdateState $
-                HL.Button.renderAsField "\x2212" (removeCondition i) false
-            , f c ]
+                HL.Button.renderAsField "\x2212"
+                  (removeCondition $ ckey c) false
+            , HH.text $ " " <> showc c ]
 
   eval :: Query ~> H.ParentDSL State Query Subquery Slot Void (AffDOM eff)
   eval (UpdateState (HL.UpdateState run next)) = do
@@ -306,7 +331,7 @@ component =
     H.modify reset
     pure next
   eval (InsertCondition c a) = do
-    H.modify (_ <> [c])
+    H.modify $ ckey c # Map.alter (const (Just c.value))
     pure a
 
 separate :: forall p i. HH.HTML p i -> Array (HH.HTML p i) -> HH.HTML p i
