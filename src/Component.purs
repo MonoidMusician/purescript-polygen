@@ -2,12 +2,12 @@ module Main.Component where
 
 import Control.Monad.Aff (Aff)
 import DOM (DOM)
-import Data.Array (intercalate, singleton, zip)
+import Data.Array (deleteAt, intercalate, mapWithIndex, zip)
 import Data.Array as Arr
 import Data.Either (Either(..))
 import Data.Lens.Record (prop)
 import Data.Lens.Suggestion (Lens')
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Newtype (wrap)
 import Data.Rational (Rational, toNumber)
 import Data.Rational.Farey (fromNumber)
@@ -86,6 +86,9 @@ _position = prop (SProxy :: SProxy "position")
 _value :: Lens' Substate String
 _value = prop (SProxy :: SProxy "value")
 
+removeCondition :: Int -> State -> State
+removeCondition i cs = deleteAt i cs # fromMaybe cs
+
 derivativeComponent :: LensComponent
 derivativeComponent state@{ derivative } =
   HH.div_
@@ -126,8 +129,8 @@ valueComponent state@{ derivative, position, value } =
       Right v -> show v
 
 specialization :: Conditions -> Array Int
-specialization conditions =
-  Arr.catMaybes $ conditions # map case _ of
+specialization =
+  Arr.mapMaybe case _ of
     r@{ derivative: d } | trivial r ->
       Just d
     _ -> Nothing
@@ -268,12 +271,13 @@ component =
       , HH.slot AddingSlot addingComponent unit (HE.input InsertCondition)
       , HH.div_ [ HH.text ("f(x) = " <> show polynomial) ]
       , HH.br_
-      , HH.div_ $ map (HH.div_ <<< singleton) $ conditions # map
-          case _ of
-            c@{ parameters: Just ps } ->
-              HH.text $ showf c <> " = " <> show ps <> " = " <> show c.value
-            c ->
-              HH.text $ showf c <> " = " <> show c.value
+      , HH.div_ $ conditions # mapWithIndex
+          \i -> removeIth i $ HH.text <<< append " " <<<
+            case _ of
+              c@{ parameters: Just ps } ->
+                showf c <> " = " <> show ps <> " = " <> show c.value
+              c ->
+                showf c <> " = " <> show c.value
       , HH.br_
       , rowTable $ conditions
       , HH.div_
@@ -290,6 +294,11 @@ component =
           , coefficientMI, productM
           , result
           } = compute state
+        removeIth i f c =
+          HH.div_
+            [ map UpdateState $
+                HL.Button.renderAsField "\x2212" (removeCondition i) false
+            , f c ]
 
   eval :: Query ~> H.ParentDSL State Query Subquery Slot Void (AffDOM eff)
   eval (UpdateState (HL.UpdateState run next)) = do

@@ -34,6 +34,6 @@ render lens state = HH.button [ attr lens ] []
 
 renderAsField :: forall s p. String -> (s -> s) -> Boolean -> Element s p
 renderAsField label lens disabled =
-    HH.div_ $ singleton $ HH.button
+    HH.button
         [ attr lens, HP.disabled disabled ]
         [ HH.text label ]

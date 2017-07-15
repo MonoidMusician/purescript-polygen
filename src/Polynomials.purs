@@ -86,17 +86,19 @@ disp2 K x = disp x
 disp2 atom c = disc c <> show atom
 
 instance showPolynomial :: Show Polynomial where
+  show (Polynomial []) = "0"
   show (Polynomial poly) = dispSum $ map show2 $ Arr.groupBy samexp poly
     where
       samexp { exponent: a } { exponent: b } = a == b
-      show1 { coefficient: 1.0, atom, exponent } = show atom
-      show1 { coefficient, atom, exponent: 0 } =
-        disp2 atom coefficient
       show1 { coefficient, atom, exponent } =
         disc coefficient <> show atom
+      show2 ({ coefficient, atom, exponent: 0 } :| []) =
+        disp2 atom coefficient
+      show2 ({ coefficient: 1.0, atom, exponent } :| []) =
+        show atom <> genx exponent
       show2 (t@{ exponent } :| []) = show1 t <> genx exponent
       show2 ts@({ exponent } :| _) =
-        "(" <> dispSum (map show1 ts) <> ")" <> genx exponent
+        "(" <> dispSum (ts # map \{ atom, coefficient } -> disp2 atom coefficient) <> ")" <> genx exponent
 
 build :: PolyBuilder -> Polynomial
 build (PolyBuilder poly) = Polynomial $ go poly c0 0 []
@@ -140,6 +142,7 @@ mkDegree :: Int -> Polynomial
 mkDegree = build <<< PolyBuilder <<< flip Arr.replicate true
 
 mkSpecialized :: Int -> Array Int -> Polynomial
+mkSpecialized 0 _ = Polynomial []
 mkSpecialized n incls = build $ PolyBuilder $
   map (not $ flip Arr.elem incls) (0 Arr... (n-1))
 
