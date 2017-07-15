@@ -9,12 +9,13 @@ import Data.Lens.Record (prop)
 import Data.Lens.Suggestion (Lens')
 import Data.Map (Map)
 import Data.Map as Map
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), maybe)
 import Data.Newtype (class Newtype, wrap)
 import Data.Rational (Rational, toNumber)
 import Data.Rational.Farey (fromNumber)
+import Data.String (joinWith)
 import Data.Symbol (SProxy(..))
-import Data.Tuple (Tuple(..), fst)
+import Data.Tuple (Tuple(..))
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
@@ -65,8 +66,8 @@ instance eqConditionKey :: Eq ConditionKey where
   eq = map (eq EQ) <$> compare
 instance ordConditionKey :: Ord ConditionKey where
   compare (CKey l) (CKey r) =
-    comparing _.position l r
-      <> comparing _.derivative l r
+    comparing _.derivative l r
+      <> comparing _.position l r
 type ConditionBase r = ConditionKeyBase
   ( value :: Row
   | r
@@ -108,7 +109,7 @@ cvalue (Tuple (CKey { derivative, position }) value) =
   { derivative, position, value }
 
 clist :: State -> Conditions
-clist m = Arr.sortWith fst (Map.toUnfoldable m) <#> cvalue
+clist m = Map.toAscUnfoldable m <#> cvalue
 
 removeCondition :: ConditionKey -> State -> State
 removeCondition k = Map.delete k
@@ -295,6 +296,8 @@ component =
       , HH.slot AddingSlot addingComponent unit (HE.input InsertCondition)
       , HH.div_ [ HH.text ("f(x) = " <> show polynomial) ]
       , HH.br_
+      , HH.div_ $ pure $ HH.text datapoints
+      , HH.br_
       , HH.div_ $ conditionsDisplayed
       , HH.br_
       , rowTable $ conditions
@@ -324,6 +327,20 @@ component =
                 HL.Button.renderAsField "\x2212"
                   (removeCondition $ ckey c) false
             , HH.text $ " " <> showc c ]
+        c2d :: Map Number (Map Int Row)
+        c2d =
+          Map.fromFoldableWith (<>) $ conditions <#>
+            \{ derivative, position, value } ->
+              Tuple position (Map.singleton derivative value)
+        byIndex :: forall a. Map Int a -> Array (Maybe a)
+        byIndex m | Map.isEmpty m = []
+        byIndex m = 0 Arr... maybe 0 _.key (Map.findMax m) <#> flip Map.lookup m
+        datapoints = intercalate ", " $ (Map.toAscUnfoldable c2d :: Array (Tuple Number (Map Int Row)))
+          <#> \(Tuple position derivatives) ->
+            byIndex derivatives
+              <#> maybe "_" show
+              # append [show position]
+              # \vs -> "(" <> joinWith ", " vs <> ")"
 
   eval :: Query ~> H.ParentDSL State Query Subquery Slot Void (AffDOM eff)
   eval (UpdateState (HL.UpdateState run next)) = do
