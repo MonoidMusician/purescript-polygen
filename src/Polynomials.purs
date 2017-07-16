@@ -277,3 +277,6 @@ substitute (Polynomial poly) (Table tbl) = Polynomial $ poly # Arr.concatMap
             , atom: a
             , exponent
             }
+
+discardVariables :: Polynomial -> Polynomial
+discardVariables (Polynomial p) = Polynomial $ Arr.filter (_.atom >>> eq K) p
