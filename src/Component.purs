@@ -35,9 +35,10 @@ import Halogen.HTML.Lens.Int as HL.Int
 import Halogen.HTML.Lens.Number as HL.Number
 import Halogen.HTML.Properties as HP
 import Main.Matrix (Matrix, mkMatrix, unMatrix, inverse, matProduct)
-import Main.Polynomials (Atom(..), Polynomial, Row, Table, Variable, constant, discardVariables, disp, evalAt, freeVariables, gather, genp, lookupIn, mkRow, mkSpecialized, mkTable, mmkAtom, nthderivative, parseLinear, showcode, substitute, variable, zeroRow)
+import Main.Polynomials (Atom(..), Polynomial, Row, Table, Variable, calcRow, constant, discardVariables, disp, evalAt, freeVariables, gather, genp, lookupIn, mkRow, mkSpecialized, mkTable, mmkAtom, nthderivative, parseLinear, showcode, substitute, variable, zeroRow)
 import Partial.Unsafe (unsafePartial)
 import Prelude hiding (degree)
+import Unsafe.Coerce (unsafeCoerce)
 
 type AffDOM eff = Aff ( dom :: DOM | eff )
 
@@ -308,6 +309,12 @@ reviseConditions f state =
             Tuple k $ fromMaybe 0.0 $ Map.lookup k state.variables
       }
 
+computePoints :: Map Variable Number -> ConditionMap -> Array (Tuple Number Number)
+computePoints variables = Map.toUnfoldable >>> Arr.mapMaybe
+  \(Tuple (CKey { derivative, position }) value) ->
+    if derivative /= 0 then Nothing else Just $
+      Tuple position $ calcRow variables value
+
 initialState :: State
 initialState =
   reviseConditions (const $
@@ -417,8 +424,10 @@ component =
 
   updateGraph :: H.ParentDSL State Query ChildrenQuery Slot Void (AffDOM eff) Unit
   updateGraph = do
+    { conditions, variables } <- H.get
+    let points = computePoints variables conditions
     p <- H.gets $ _.computed >>> map _.graphSafe
-    for_ p $ H.query' cp2 unit <<< H.action <<< SetPolynomial
+    for_ p $ H.query' cp2 unit <<< H.action <<< SetPolynomial points
 
   eval :: Query ~> H.ParentDSL State Query ChildrenQuery Slot Void (AffDOM eff)
   eval (UpdateState q) = HL.eval q <* do
@@ -440,7 +449,8 @@ separate :: forall p i. HH.HTML p i -> Array (HH.HTML p i) -> HH.HTML p i
 separate sep = HH.span_ <<< intercalate [sep] <<< map Arr.singleton
 
 type GraphState = Maybe Plot
-data GraphQuery a = Initialize a | SetPolynomial Polynomial a
+type Points = Array (Tuple Number Number)
+data GraphQuery a = Initialize a | SetPolynomial Points Polynomial a
 
 graphComponent :: forall eff. H.Component HH.HTML GraphQuery Unit Void (AffDOM eff)
 graphComponent =
@@ -461,25 +471,32 @@ graphComponent =
       []
 
   eval :: GraphQuery ~> H.ComponentDSL GraphState GraphQuery Void (AffDOM eff)
-  eval (SetPolynomial p a) = do
+  eval (SetPolynomial pts p a) = do
     H.get >>= case _ of
       Nothing -> pure unit
       Just graph -> H.liftEff do
         let
           graphData =
-            [{ graphType: "polyline"
-            , fn: showcode p
-            , derivative:
-                { fn: showcode (nthderivative 1 p)
-                , updateOnMouseMove: true
-                }
-            }]
+            [ { graphType: "polyline"
+              , fn: showcode p
+              , derivative:
+                  { fn: showcode (nthderivative 1 p)
+                  , updateOnMouseMove: true
+                  }
+              }
+            , { graphType: "scatter"
+              , fnType: "points"
+              , points: pts <#> \(Tuple x y) -> [x, y]
+              } # unsafeCoerce
+            ]
         setData graph graphData
         draw graph
     pure a
   eval (Initialize a) = do
     let
-      p = (unsafePartial fromJust initialState.computed).graphSafe
+      computed = unsafePartial fromJust initialState.computed
+      p = computed.graphSafe
+      pts = computePoints initialState.variables initialState.conditions
       options =
         {
           target: wrap "#graph",
@@ -494,19 +511,11 @@ graphComponent =
             domain: [0.0, 1.0],
             invert: false,
             label: ""
-          },
-          "data": [{
-            graphType: "polyline",
-            fn: showcode p,
-            derivative: {
-              fn: showcode (nthderivative 1 p),
-              updateOnMouseMove: true
-            }
-          }]
+          }
         }
     plot <- H.liftEff $ functionPlot options
     H.modify (const (Just plot))
-    pure a
+    eval (SetPolynomial pts p a)
 
 type AxisOptions =
   { type :: String
@@ -534,14 +543,14 @@ type Options =
   , "data" :: Data
   )
 type Data = Array Datum
-type Datum =
-  { graphType :: String
+type Datum = forall r. Record r
+  {- graphType :: String
   , fn :: String
   , derivative ::
       { fn :: String
       , updateOnMouseMove :: Boolean
       }
-  }
+  -}
   {- title :: String
   , skipTip :: Boolean
   , range :: Array Number

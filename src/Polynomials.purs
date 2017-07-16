@@ -1,15 +1,17 @@
 module Main.Polynomials where
 
 import Prelude
-import Data.Array as Arr
-import Data.Map as Map
+
 import Control.Apply (lift2)
 import Data.Array ((:))
+import Data.Array as Arr
 import Data.Either (Either(..))
 import Data.Foldable (class Foldable)
 import Data.Int (fromNumber, toNumber)
 import Data.Map (Map)
+import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, isJust)
+import Data.Monoid.Additive (Additive(..))
 import Data.Newtype (class Newtype, unwrap)
 import Data.NonEmpty ((:|))
 import Data.Number (fromString) as Number
@@ -218,6 +220,14 @@ evalAt x (Polynomial poly) = mkRow $ map calc poly
 
 eval :: Polynomial -> Number -> Row
 eval = flip evalAt
+
+calcRow :: Map Variable Number -> Row -> Number
+calcRow vars (Row m) = unwrap $ rows # Arr.foldMap \(Tuple k v) ->
+  Additive case k of
+    K -> v
+    V var -> v*(fromMaybe 0.0 $ Map.lookup var vars)
+  where
+    rows = Map.toUnfoldable m :: Array (Tuple Atom Number)
 
 raise :: Number -> Int -> Number
 raise x i = pow x (toNumber i)
