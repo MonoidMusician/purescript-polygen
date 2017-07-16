@@ -166,6 +166,12 @@ mkSpecialized 0 _ = Polynomial []
 mkSpecialized n incls = build $ PolyBuilder $
   map (not $ flip Arr.elem incls) (0 Arr... (n-1))
 
+freeVariables :: Polynomial -> Array Variable
+freeVariables (Polynomial p) = Arr.mapMaybe (_.atom >>> fromAtom) p
+  where
+    fromAtom K = Nothing
+    fromAtom (V v) = Just v
+
 newtype Row = Row (Map Atom Number)
 newtype Table = Table (Map Atom Row)
 derive newtype instance eqRow :: Eq Row

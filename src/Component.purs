@@ -12,11 +12,12 @@ import Data.Either.Nested (Either2)
 import Data.Foldable (foldMap, for_)
 import Data.Function.Uncurried (Fn2)
 import Data.Functor.Coproduct.Nested (type (<\/>))
+import Data.Lens.Lens (lens)
 import Data.Lens.Record (prop)
 import Data.Lens.Suggestion (Lens')
 import Data.Map (Map)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromJust, maybe)
+import Data.Maybe (Maybe(..), fromJust, fromMaybe, maybe)
 import Data.Newtype (class Newtype, unwrap, wrap)
 import Data.Rational.Big (BigRational, toNumber, fromNumber)
 import Data.String (joinWith)
@@ -32,8 +33,9 @@ import Halogen.HTML.Lens.Int as HL.Int
 import Halogen.HTML.Lens.Number as HL.Number
 import Halogen.HTML.Properties as HP
 import Main.Matrix (Matrix, mkMatrix, unMatrix, inverse, matProduct)
-import Main.Polynomials (Atom, Polynomial, Row, Table, constant, discardVariables, disp, evalAt, gather, genp, lookupIn, mkRow, mkSpecialized, mkTable, mmkAtom, nthderivative, parseLinear, showcode, substitute, variable, zeroRow)
+import Main.Polynomials (Atom(..), Polynomial, Row, Table, Variable, constant, discardVariables, disp, evalAt, freeVariables, gather, genp, lookupIn, mkRow, mkSpecialized, mkTable, mmkAtom, nthderivative, parseLinear, showcode, substitute, variable, zeroRow)
 import Partial.Unsafe (unsafePartial)
+import Data.Ord.Down (Down(..))
 import Prelude hiding (degree)
 
 type AffDOM eff = Aff ( dom :: DOM | eff )
@@ -41,6 +43,7 @@ type AffDOM eff = Aff ( dom :: DOM | eff )
 data Query a
   = DeleteCondition ConditionKey a
   | InsertCondition Condition a
+  | UpdateState (HL.Query State a)
 
 data Subquery a
   = UpdateSubstate (HL.Query Substate a)
@@ -62,7 +65,7 @@ type Substate =
 type State =
   { conditions :: ConditionMap
   , computed :: Maybe Computed
-  , variables :: Row
+  , variables :: Map Variable Number
   }
 type ConditionMap = Map ConditionKey Row
 type ConditionKeyBase r =
@@ -76,7 +79,7 @@ instance eqConditionKey :: Eq ConditionKey where
   eq = map (eq EQ) <$> compare
 instance ordConditionKey :: Ord ConditionKey where
   compare (CKey l) (CKey r) =
-    comparing _.derivative l r
+    comparing (_.derivative >>> Down) l r
       <> comparing _.position l r
 type ConditionBase r = ConditionKeyBase
   ( value :: Row
@@ -205,7 +208,7 @@ fromMatrix :: Array Atom -> Matrix BigRational -> Array Row
 fromMatrix values matrix = map (mkRow <<< zip values <<< map toNumber) $ unMatrix matrix
 
 compute :: State -> Computed
-compute { conditions: cs } =
+compute { conditions: cs, variables } =
     { polynomial, conditions
     , params, values
     , coefficientM, valueM
@@ -235,24 +238,26 @@ compute { conditions: cs } =
     productM = coefficientMI `matProduct` valueM
     result = mkTable $ zip params $ fromMatrix values productM
     substituted = substitute polynomial result
-    graphSafe = discardVariables substituted
+    varTable = mkVarTable variables
+    graphSafe = discardVariables $ substitute substituted varTable
+
+mkVarTable :: Map Variable Number -> Table
+mkVarTable variables = mkTable $ variables # Map.toUnfoldable <#> \(Tuple k v) ->
+  Tuple (V k) (constant v)
 
 addingComponent :: forall eff. H.Component HH.HTML Subquery Unit Submessage (AffDOM eff)
 addingComponent =
   H.component
-    { initialState: const initialState
+    { initialState: const
+        { derivative: 0
+        , position: 0.0
+        , value: "0"
+        }
     , render
     , eval
     , receiver: const Nothing
     }
   where
-
-  initialState :: Substate
-  initialState =
-    { derivative: 0
-    , position: 0.0
-    , value: "0"
-    }
 
   render :: Substate -> H.ComponentHTML Subquery
   render substate@{ derivative, position, value } =
@@ -285,11 +290,27 @@ showf { derivative: d, position: p } =
 
 reviseConditions :: (ConditionMap -> ConditionMap) -> (State -> State)
 reviseConditions f state =
-  let
-    conditions = f state.conditions
-  in if conditions == state.conditions then state
-  else let state' = state { conditions = conditions }
-  in state' { computed = Just (compute state') }
+  let conditions = f state.conditions in
+  if conditions == state.conditions
+    then state
+    else let
+      state' = state { conditions = conditions }
+      computed = compute state'
+      free = freeVariables computed.substituted
+      allvariables = free <#> \k ->
+        Tuple k $ fromMaybe 0.0 $ Map.lookup k state.variables
+      variables = Map.fromFoldable allvariables
+    in state' { computed = Just computed, variables = variables }
+
+initialState :: State
+initialState =
+  reviseConditions (const $
+    Map.fromFoldable $ (\c -> Tuple (ckey c) c.value) <$>
+      [ { derivative: 0, position: 0.0, value: zeroRow }
+      , { derivative: 0, position: 0.5, value: constant one }
+      , { derivative: 1, position: 0.5, value: zeroRow }
+      , { derivative: 0, position: 1.0, value: variable (unsafePartial fromJust (mmkAtom "h")) }
+      ]) { conditions: Map.empty, computed: Nothing, variables: Map.empty }
 
 component :: forall eff. H.Component HH.HTML Query Unit Void (AffDOM eff)
 component =
@@ -301,27 +322,8 @@ component =
     }
   where
 
-  initialState :: State
-  initialState =
-    reviseConditions (const $
-      Map.fromFoldable $ (\c -> Tuple (ckey c) c.value) <$>
-        [ { derivative: 0, position: 0.0, value: zeroRow }
-        , { derivative: 0, position: 0.5, value: constant one }
-        , { derivative: 1, position: 0.5, value: zeroRow }
-        , { derivative: 0, position: 1.0, value: variable (unsafePartial fromJust (mmkAtom "h")) }
-        ]) { conditions: Map.empty, computed: Nothing, variables: zeroRow }
-    {-
-    [ { derivative: 0, position: 0.0, value: zeroRow }
-    , { derivative: 0, position: 1.0, value: constant 1.0 }
-    , { derivative: 1, position: 0.0, value: zeroRow }
-    , { derivative: 1, position: 1.0, value: zeroRow }
-    , { derivative: 2, position: 0.0, value: zeroRow }
-    , { derivative: 2, position: 1.0, value: zeroRow }
-    ]
-    -}
-
   render :: State -> H.ParentHTML Query ChildrenQuery Slot (AffDOM eff)
-  render state@{ conditions: cs, computed } =
+  render state@{ conditions: cs, computed, variables } =
     HH.div_ $
       [ HH.h1_
           [ HH.text "Create a Polynomial" ]
@@ -351,6 +353,8 @@ component =
               , HH.br_
               , HH.text $ show substituted
               ]
+          , HH.br_
+          , HH.div_ variablesDisplayed
           , HH.br_
           , HH.pre_ $ pure $ HH.text $ Arr.intercalate "\n"
               [ "f(x) = " <> showcode polynomial
@@ -390,18 +394,41 @@ component =
               <#> maybe "_" show
               # append [show position]
               # \vs -> "(" <> joinWith ", " vs <> ")"
+        --variableLens :: Lens' State Number
+        variableLens k = lens
+          (\st -> fromMaybe 0.0 $ Map.lookup k st.variables)
+          (\st v -> st { variables = Map.insert k v st.variables })
+        variablesDisplayed = map snd $ Map.toAscUnfoldable $ variables # Map.mapWithKey \k v ->
+          HH.div_
+            [ HH.text $ show k <> " = "
+            , map UpdateState $ HL.Number.renderBounded Nothing Nothing (variableLens k) state
+            ]
+
+  updateConditions :: (ConditionMap -> ConditionMap) -> H.ParentDSL State Query ChildrenQuery Slot Void (AffDOM eff) Unit
+  updateConditions f = do
+    H.modify $ reviseConditions f
+    updateGraph
+
+  updateGraph :: H.ParentDSL State Query ChildrenQuery Slot Void (AffDOM eff) Unit
+  updateGraph = do
+    p <- H.gets $ _.computed >>> map _.graphSafe
+    for_ p $ H.query' cp2 unit <<< H.action <<< SetPolynomial
 
   eval :: Query ~> H.ParentDSL State Query ChildrenQuery Slot Void (AffDOM eff)
-  eval (DeleteCondition key a) = do
-    H.modify $ reviseConditions $ Map.delete key
-    p <- H.gets $ _.computed >>> map _.graphSafe
-    for_ p $ H.query' cp2 unit <<< H.action <<< SetPolynomial
-    pure a
-  eval (InsertCondition c a) = do
-    H.modify $ reviseConditions $ ckey c # Map.alter (const (Just c.value))
-    p <- H.gets $ _.computed >>> map _.graphSafe
-    for_ p $ H.query' cp2 unit <<< H.action <<< SetPolynomial
-    pure a
+  eval (UpdateState q) = HL.eval q <* do
+    H.modify case _ of
+      state@{ computed: Just computed, variables } ->
+        let
+          varTable = mkVarTable variables
+          graphSafe = discardVariables $ substitute computed.substituted varTable
+        in state { computed = Just (computed { graphSafe = graphSafe })}
+      state -> state
+    updateGraph
+  eval (DeleteCondition key a) =
+    pure a <* updateConditions (Map.delete key)
+  eval (InsertCondition c a) =
+    pure a <* updateConditions (Map.insert (ckey c) c.value)
+
 
 separate :: forall p i. HH.HTML p i -> Array (HH.HTML p i) -> HH.HTML p i
 separate sep = HH.span_ <<< intercalate [sep] <<< map Arr.singleton
@@ -412,7 +439,7 @@ data GraphQuery a = Initialize a | SetPolynomial Polynomial a
 graphComponent :: forall eff. H.Component HH.HTML GraphQuery Unit Void (AffDOM eff)
 graphComponent =
   H.lifecycleComponent
-    { initialState: const initialState
+    { initialState: const Nothing
     , render
     , eval
     , initializer: Just (H.action Initialize)
@@ -420,9 +447,6 @@ graphComponent =
     , receiver: const Nothing
     }
   where
-
-  initialState :: GraphState
-  initialState = Nothing
 
   render :: GraphState -> H.ComponentHTML GraphQuery
   render _ =
@@ -449,6 +473,7 @@ graphComponent =
     pure a
   eval (Initialize a) = do
     let
+      p = (unsafePartial fromJust initialState.computed).graphSafe
       options =
         {
           target: wrap "#graph",
@@ -466,9 +491,9 @@ graphComponent =
           },
           "data": [{
             graphType: "polyline",
-            fn: "6.0*x^5 - 15.0*x^4 + 10.0*x^3",
+            fn: showcode p,
             derivative: {
-              fn: "30.0*x^4 - 60.0*x^3 + 30.0*x^2",
+              fn: showcode (nthderivative 1 p),
               updateOnMouseMove: true
             }
           }]
@@ -540,7 +565,7 @@ setOptions = setOptionsImpl
 foreign import setDataImpl ::
   forall r eff. Plot -> Array (Record r) -> Eff (dom :: DOM | eff) Unit
 setData ::
-  forall r fill eff.
+  forall r eff.
   Plot -> Array (Record r) -> Eff (dom :: DOM | eff) Unit
 setData = setDataImpl
 
