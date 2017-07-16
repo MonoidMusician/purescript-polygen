@@ -19,9 +19,11 @@ import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromJust, fromMaybe, maybe)
 import Data.Newtype (class Newtype, unwrap, wrap)
+import Data.Ord.Down (Down(..))
 import Data.Rational.Big (BigRational, toNumber, fromNumber)
 import Data.String (joinWith)
 import Data.Symbol (SProxy(..))
+import Data.Traversable (maximum)
 import Data.Tuple (Tuple(..), snd)
 import Halogen as H
 import Halogen.Component.ChildPath (cp1, cp2)
@@ -35,7 +37,6 @@ import Halogen.HTML.Properties as HP
 import Main.Matrix (Matrix, mkMatrix, unMatrix, inverse, matProduct)
 import Main.Polynomials (Atom(..), Polynomial, Row, Table, Variable, constant, discardVariables, disp, evalAt, freeVariables, gather, genp, lookupIn, mkRow, mkSpecialized, mkTable, mmkAtom, nthderivative, parseLinear, showcode, substitute, variable, zeroRow)
 import Partial.Unsafe (unsafePartial)
-import Data.Ord.Down (Down(..))
 import Prelude hiding (degree)
 
 type AffDOM eff = Aff ( dom :: DOM | eff )
@@ -207,8 +208,12 @@ toMatrix values rows = mkMatrix $ map (\r -> map (lookupIn r >>> fromNumber) val
 fromMatrix :: Array Atom -> Matrix BigRational -> Array Row
 fromMatrix values matrix = map (mkRow <<< zip values <<< map toNumber) $ unMatrix matrix
 
-compute :: State -> Computed
-compute { conditions: cs, variables } =
+compute :: State -> Maybe Computed
+compute { conditions: cs }
+  | Just largest <- maximum $ Map.keys cs <#> \(CKey { derivative }) -> derivative
+  , largest >= Map.size cs
+    = Nothing
+compute { conditions: cs, variables } = Just
     { polynomial, conditions
     , params, values
     , coefficientM, valueM
@@ -296,11 +301,12 @@ reviseConditions f state =
     else let
       state' = state { conditions = conditions }
       computed = compute state'
-      free = freeVariables computed.substituted
-      allvariables = free <#> \k ->
-        Tuple k $ fromMaybe 0.0 $ Map.lookup k state.variables
-      variables = Map.fromFoldable allvariables
-    in state' { computed = Just computed, variables = variables }
+    in state'
+      { computed = computed
+      , variables = fromMaybe state.variables $ computed <#> \{ substituted } ->
+          Map.fromFoldable $ freeVariables substituted <#> \k ->
+            Tuple k $ fromMaybe 0.0 $ Map.lookup k state.variables
+      }
 
 initialState :: State
 initialState =
