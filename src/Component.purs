@@ -6,7 +6,7 @@ import DOM (DOM)
 import DOM.Node.ParentNode (QuerySelector)
 import Data.Array (intercalate, zip)
 import Data.Array as Arr
-import Data.Either (Either(..))
+import Data.Either (Either(Left))
 import Data.Either.Nested (Either2)
 import Data.Foldable (foldMap, for_)
 import Data.Function.Uncurried (Fn2)
@@ -34,7 +34,7 @@ import Halogen.HTML.Lens.Int as HL.Int
 import Halogen.HTML.Lens.Number as HL.Number
 import Halogen.HTML.Properties as HP
 import Main.Matrix (Matrix, mkMatrix, unMatrix, inverse, matProduct)
-import Main.Polynomials (Atom(..), Polynomial, Row, Table, Variable, calcRow, constant, degree, discardVariables, disp, evalAt, freeVariables, gather, genp, lookupIn, mkRow, mkSpecialized, mkTable, mmkAtom, nthderivative, parseLinear, showcode, substitute, variable, zeroRow)
+import Main.Polynomials (Atom(..), Polynomial, Row(..), Table, Variable, calcRow, constant, degree, discardVariables, disp, evalAt, freeVariables, gather, genp, lookup, lookupIn, mkRow, mkSpecialized, mkTable, mmkAtom, nthderivative, parseLinear, parseLinear_, setCoefficient, showcode, substitute, variable, zeroRow)
 import Partial.Unsafe (unsafePartial)
 import Prelude hiding (degree)
 import Unsafe.Coerce (unsafeCoerce)
@@ -179,13 +179,37 @@ valueComponent state@{ derivative, position, value } =
   HH.div_
     [ HH.text "should equal "
     , map UpdateSubstate $ HL.Input.render _value state
-    , HH.text (": " <> evalue)
+    , HH.text ": "
+    , evalue
     ]
   where
     parsed = parseLinear value
-    evalue = case parsed of
-      Left s -> s
-      Right v -> show v
+    parsed' = parseLinear_ value
+    parsedLens :: Atom -> Lens' Substate Number
+    parsedLens k = prop (SProxy :: SProxy "value") <<< lens
+      (\val -> fromMaybe 0.0 $
+        (if val == value then parsed' else parseLinear_ val)
+        <#> lookup k
+      )
+      (\val v -> fromMaybe val $
+        (if val == value then parsed' else parseLinear_ val)
+        <#> setCoefficient k v >>> show
+      )
+    evalue = case parsed, parsed' of
+      Left s, _ ->
+        HH.div
+          [ HP.class_ $ wrap "error" ]
+          [ HH.text s ]
+      _, Just v@(Row r) ->
+        let
+          r' = Map.alter (Just <<< fromMaybe 0.0) K r
+          fields = Map.toAscUnfoldable (r') <#> \(Tuple k _) ->
+            HH.span_
+              [ map UpdateSubstate $ HL.Number.render (parsedLens k) state
+              , HH.text $ show k
+              ]
+        in HH.div_ $ HH.div_ <<< pure <$> ([HH.text $ show v] <> fields)
+      _, _ -> HH.text "parsing failed"
 
 specialization :: Conditions -> Array Int
 specialization =

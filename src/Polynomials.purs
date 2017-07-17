@@ -5,7 +5,7 @@ import Prelude
 import Control.Apply (lift2)
 import Data.Array ((:))
 import Data.Array as Arr
-import Data.Either (Either(..))
+import Data.Either (Either(..), either)
 import Data.Foldable (class Foldable)
 import Data.Int (fromNumber, toNumber)
 import Data.Map (Map)
@@ -237,12 +237,11 @@ linearR = unsafeRegex
   "^(?:(-?\\d*(?:\\.\\d+)?)([_a-zA-Z]+)|(-?\\d+(?:\\.\\d+)?)\\.?)(?:/(-?\\d+(?:\\.\\d+)?)\\.?)?$"
   noFlags
 
-parseLinear :: String -> Either String Row
-parseLinear "" = Left "Empty string"
-parseLinear orig =
-    map mkRow
-    $ Arr.foldr (lift2 (:)) (Right [])
-    $ map parseTerm sections
+parseLinear' :: String -> Either String (Array (Tuple Atom Number))
+parseLinear' "" = Left "Empty string"
+parseLinear' orig =
+    Arr.foldr (lift2 (:)) (Right []) $
+    parseTerm <$> sections
   where
     mkv = V <<< Variable
     minus = unsafeRegex "\\s*-\\s*" global
@@ -272,6 +271,13 @@ parseLinear orig =
               Right (Tuple K (k/parseDenomm denomm))
         Just m -> Left ("Failed to parse " <> term <> " as " <> show m)
 
+parseLinear :: String -> Either String Row
+parseLinear = parseLinear' >>> map mkRow
+
+parseLinear_ :: String -> Maybe Row
+parseLinear_ = parseLinear' >>> either (const Nothing)
+  (Map.fromFoldableWith (+) >>> Row >>> Just)
+
 gather :: Array Row -> Array Atom
 gather = Arr.fromFoldable <<< Map.keys <<< fold <<< map (\(Row r) -> r)
 
@@ -280,6 +286,9 @@ lookupIn (Row r) a = Map.lookup a r # fromMaybe 0.0
 
 lookup :: Atom -> Row -> Number
 lookup a (Row r) = Map.lookup a r # fromMaybe 0.0
+
+setCoefficient :: Atom -> Number -> Row -> Row
+setCoefficient a v (Row r) = Row (Map.insert a v r)
 
 substitute :: Polynomial -> Table -> Polynomial
 substitute (Polynomial poly) (Table tbl) = Polynomial $ poly # Arr.concatMap
