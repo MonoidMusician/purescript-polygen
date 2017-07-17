@@ -6,12 +6,11 @@ import DOM (DOM)
 import DOM.Node.ParentNode (QuerySelector)
 import Data.Array (intercalate, zip)
 import Data.Array as Arr
-import Data.Const (Const)
 import Data.Either (Either(..))
 import Data.Either.Nested (Either2)
 import Data.Foldable (foldMap, for_)
 import Data.Function.Uncurried (Fn2)
-import Data.Functor.Coproduct.Nested (type (<\/>))
+import Data.Functor.Coproduct.Nested (Coproduct2)
 import Data.Lens.Lens (lens)
 import Data.Lens.Record (prop)
 import Data.Lens.Suggestion (Lens')
@@ -46,14 +45,16 @@ data Query a
   = DeleteCondition ConditionKey a
   | InsertCondition Condition a
   | UpdateState (HL.Query State a)
+  | SendSubquery (forall b. b -> Subquery b) a
 
 data Subquery a
   = UpdateSubstate (HL.Query Substate a)
+  | SetSubstate Substate a
   | AddCondition a
 
 type Submessage = Condition
 
-type ChildrenQuery = Subquery <\/> GraphQuery <\/> Const Void
+type ChildrenQuery = Coproduct2 Subquery GraphQuery
 type Slot = Either2 Unit Unit
 
 type Element p = H.HTML p Query
@@ -292,16 +293,14 @@ addingComponent =
       ]
 
   eval :: Subquery ~> H.ComponentDSL Substate Subquery Submessage (AffDOM eff)
-  eval (UpdateSubstate (HL.UpdateState run next)) = do
+  eval (SetSubstate substate a) = pure a <* H.put substate
+  eval (UpdateSubstate (HL.UpdateState run a)) = pure a <* do
     reset <- H.liftEff run
     H.modify reset
-    pure next
-  eval (AddCondition a) = do
+  eval (AddCondition a) = pure a <* do
     state@{ value: val } <- H.get
-    case parseLinear val of
-      Right value -> H.raise state { value = value }
-      Left _ -> pure unit
-    pure a
+    for_ (parseLinear val) \value ->
+      H.raise state { value = value }
 
 showf :: forall r. { derivative :: Int, position :: Number | r } -> String
 showf { derivative: d, position: p } =
@@ -417,7 +416,14 @@ component =
             [ HH.button
                 [ HE.onClick (HE.input_ $ DeleteCondition key) ]
                 [ HH.text "\x2212" ]
-            , HH.text $ " " <> showc (unwrap key) value mparameters ]
+            , HH.span
+                [ HE.onClick (HE.input_ $ SendSubquery (SetSubstate substate)) ]
+                [ HH.text $ " " <> showc (unwrap key) value mparameters ]
+            ]
+          where
+            substate = case key of
+              CKey { derivative: d, position: x } ->
+                { derivative: d, position: x, value: show value }
         c2d :: Map Number (Map Int Row)
         c2d =
           Map.fromFoldableWith (<>) $ cs # Map.mapWithKey
@@ -468,6 +474,8 @@ component =
     pure a <* updateConditions (Map.delete key)
   eval (InsertCondition c a) =
     pure a <* updateConditions (Map.insert (ckey c) c.value)
+  eval (SendSubquery query a) =
+    pure a <* H.query' cp1 unit (H.action query)
 
 
 separate :: forall p i. HH.HTML p i -> Array (HH.HTML p i) -> HH.HTML p i
