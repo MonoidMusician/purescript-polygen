@@ -35,7 +35,7 @@ import Halogen.HTML.Lens.Int as HL.Int
 import Halogen.HTML.Lens.Number as HL.Number
 import Halogen.HTML.Properties as HP
 import Main.Matrix (Matrix, mkMatrix, unMatrix, inverse, matProduct)
-import Main.Polynomials (Atom(..), Polynomial, Row, Table, Variable, calcRow, constant, discardVariables, disp, evalAt, freeVariables, gather, genp, lookupIn, mkRow, mkSpecialized, mkTable, mmkAtom, nthderivative, parseLinear, showcode, substitute, variable, zeroRow)
+import Main.Polynomials (Atom(..), Polynomial, Row, Table, Variable, calcRow, constant, degree, discardVariables, disp, evalAt, freeVariables, gather, genp, lookupIn, mkRow, mkSpecialized, mkTable, mmkAtom, nthderivative, parseLinear, showcode, substitute, variable, zeroRow)
 import Partial.Unsafe (unsafePartial)
 import Prelude hiding (degree)
 import Unsafe.Coerce (unsafeCoerce)
@@ -68,6 +68,10 @@ type State =
   { conditions :: ConditionMap
   , computed :: Maybe Computed
   , variables :: Map Variable Number
+  , evaluate ::
+      { derivative :: Int
+      , position :: Number
+      }
   }
 type ConditionMap = Map ConditionKey Row
 type ConditionKeyBase r =
@@ -120,6 +124,15 @@ _value = prop (SProxy :: SProxy "value")
 
 _conditions :: Lens' State ConditionMap
 _conditions = prop (SProxy :: SProxy "conditions")
+
+_evaluate :: Lens' State { derivative :: Int, position :: Number }
+_evaluate = prop (SProxy :: SProxy "evaluate")
+
+_evalderivative :: Lens' State Int
+_evalderivative = _evaluate <<< prop (SProxy :: SProxy "derivative")
+
+_evalposition :: Lens' State Number
+_evalposition = _evaluate <<< prop (SProxy :: SProxy "position")
 
 ckey :: forall r. ConditionKeyBase r -> ConditionKey
 ckey { derivative, position } = CKey { derivative, position }
@@ -323,7 +336,7 @@ initialState =
       , { derivative: 0, position: 0.5, value: constant one }
       , { derivative: 1, position: 0.5, value: zeroRow }
       , { derivative: 0, position: 1.0, value: variable (unsafePartial fromJust (mmkAtom "h")) }
-      ]) { conditions: Map.empty, computed: Nothing, variables: Map.empty }
+      ]) { conditions: Map.empty, computed: Nothing, variables: Map.empty, evaluate: { derivative: 0, position: 0.0 } }
 
 component :: forall eff. H.Component HH.HTML Query Unit Void (AffDOM eff)
 component =
@@ -368,6 +381,18 @@ component =
               ]
           , HH.br_
           , HH.div_ variablesDisplayed
+          , HH.br_
+          , HH.text "Evaluate derivative "
+          , map UpdateState $ HL.Int.renderBounded (Just 0) (Just $ degree polynomial) _evalderivative state
+          , HH.text " at x = "
+          , map UpdateState $ HL.Number.renderBounded Nothing Nothing _evalposition state
+          , HH.br_
+          , HH.text let
+              calculate =
+                nthderivative state.evaluate.derivative
+                  >>> evalAt state.evaluate.position
+            in showf state.evaluate <> " = " <>
+              joinWith " = " (map show $ Arr.nub $ calculate <$> [polynomial, substituted, graphSafe])
           , HH.br_
           , HH.pre_ $ pure $ HH.text $ Arr.intercalate "\n"
               [ "f(x) = " <> showcode polynomial
