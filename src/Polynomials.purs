@@ -81,6 +81,7 @@ disp x = case fromNumber x of
 
 disc :: Number -> String
 disc 1.0 = ""
+disc (-1.0) = "-"
 disc c = disp c
 
 disp2 :: Atom -> Number -> String
@@ -96,11 +97,21 @@ instance showPolynomial :: Show Polynomial where
         disc coefficient <> show atom
       show2 ({ coefficient, atom, exponent: 0 } :| []) =
         disp2 atom coefficient
+      show2 ({ coefficient: -1.0, atom, exponent } :| []) =
+        "-" <> show atom <> genx exponent
       show2 ({ coefficient: 1.0, atom, exponent } :| []) =
         show atom <> genx exponent
       show2 (t@{ exponent } :| []) = show1 t <> genx exponent
       show2 ts@({ exponent } :| _) =
         "(" <> dispSum (ts # map \{ atom, coefficient } -> disp2 atom coefficient) <> ")" <> genx exponent
+
+simplify :: Polynomial -> Polynomial
+simplify (Polynomial p) = Polynomial $ map from $ Map.toAscUnfoldable $
+  Map.filter (0.0 /= _) $ Map.fromFoldableWith (+) $ to <$> p
+  where
+    to { coefficient, atom, exponent } = Tuple (Tuple exponent atom) coefficient
+    from (Tuple (Tuple exponent atom) coefficient) =
+      { coefficient, atom, exponent }
 
 showcode :: Polynomial -> String
 showcode (Polynomial []) = "0.0"
@@ -121,6 +132,26 @@ showcode (Polynomial poly) = dispSum $ map show2 $ Arr.groupBy samexp poly
         show coefficient <> case atom of
           K -> ""
           _ -> "*" <> show atom) <> ")*" <> "x^" <> show exponent
+
+showGLSL :: Polynomial -> String
+showGLSL (Polynomial []) = "0.0"
+showGLSL (Polynomial poly) = dispSum $ map show2 $ Arr.groupBy samexp poly
+  where
+    samexp { exponent: a } { exponent: b } = a == b
+    show1 { coefficient, atom, exponent } =
+      show coefficient <> "*" <> show atom
+    show2 ({ coefficient, atom, exponent: 0 } :| []) =
+      show coefficient <> case atom of
+        K -> ""
+        _ -> "*" <> show atom
+    show2 ({ coefficient: 1.0, atom, exponent } :| []) =
+      show atom <> "pow(x, " <> show exponent <> ".0)"
+    show2 (t@{ exponent } :| []) = show1 t <> "pow(x, " <> show exponent <> ".0)"
+    show2 ts@({ exponent } :| _) =
+      "(" <> dispSum (ts # map \{ atom, coefficient } ->
+        show coefficient <> case atom of
+          K -> ""
+          _ -> "*" <> show atom) <> ")*" <> "pow(x, " <> show exponent <> ".0)"
 
 build :: PolyBuilder -> Polynomial
 build (PolyBuilder poly) = Polynomial $ go poly c0 0 []

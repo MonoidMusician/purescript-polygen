@@ -34,7 +34,7 @@ import Halogen.HTML.Lens.Int as HL.Int
 import Halogen.HTML.Lens.Number as HL.Number
 import Halogen.HTML.Properties as HP
 import Main.Matrix (Matrix, mkMatrix, unMatrix, inverse, matProduct)
-import Main.Polynomials (Atom(..), Polynomial, Row(..), Table, Variable, calcRow, constant, degree, discardVariables, disp, evalAt, freeVariables, gather, genp, lookup, lookupIn, mkRow, mkSpecialized, mkTable, mmkAtom, nthderivative, parseLinear, parseLinear_, setCoefficient, showcode, substitute, variable, zeroRow)
+import Main.Polynomials (Atom(..), Polynomial, Row(..), Table, Variable, simplify, calcRow, constant, degree, discardVariables, disp, evalAt, freeVariables, gather, genp, lookup, lookupIn, mkRow, mkSpecialized, mkTable, mmkAtom, nthderivative, parseLinear, parseLinear_, setCoefficient, showcode, showGLSL, substitute, variable, zeroRow)
 import Partial.Unsafe (unsafePartial)
 import Prelude hiding (degree)
 import Unsafe.Coerce (unsafeCoerce)
@@ -281,9 +281,9 @@ compute { conditions: cs, variables } = Just
     coefficientMI = inverse coefficientM
     productM = coefficientMI `matProduct` valueM
     result = mkTable $ zip params $ fromMatrix values productM
-    substituted = substitute polynomial result
+    substituted = simplify $ substitute polynomial result
     varTable = mkVarTable variables
-    graphSafe = discardVariables $ substitute substituted varTable
+    graphSafe = discardVariables $ simplify $ substitute substituted varTable
 
 mkVarTable :: Map Variable Number -> Table
 mkVarTable variables = mkTable $ variables # Map.toUnfoldable <#> \(Tuple k v) ->
@@ -420,8 +420,10 @@ component =
           , HH.pre_ $ pure $ HH.text $ Arr.intercalate "\n"
               [ "f(x) = " <> showcode polynomial
               , "     = " <> showcode substituted
+              , "     = " <> showGLSL substituted
               , "f'(x) =" <> showcode (nthderivative 1 substituted)
               , "f(x) = " <> showcode graphSafe
+              , "     = " <> showGLSL graphSafe
               ]
           ]
       where
@@ -490,7 +492,7 @@ component =
       state@{ computed: Just computed, variables } ->
         let
           varTable = mkVarTable variables
-          graphSafe = discardVariables $ substitute computed.substituted varTable
+          graphSafe = discardVariables $ simplify $ substitute computed.substituted varTable
         in state { computed = Just (computed { graphSafe = graphSafe })}
       state -> state
     updateGraph
