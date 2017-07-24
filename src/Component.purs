@@ -1,15 +1,13 @@
 module Main.Component where
 
 import Control.Monad.Aff (Aff)
-import Control.Monad.Eff (Eff)
 import DOM (DOM)
-import DOM.Node.ParentNode (QuerySelector)
+import DOM.Node.ParentNode (QuerySelector(..))
 import Data.Array (intercalate, zip)
 import Data.Array as Arr
 import Data.Either (Either(Left))
 import Data.Either.Nested (Either2)
 import Data.Foldable (foldMap, for_)
-import Data.Function.Uncurried (Fn2)
 import Data.Functor.Coproduct.Nested (Coproduct2)
 import Data.Lens.Lens (lens)
 import Data.Lens.Record (prop)
@@ -19,11 +17,17 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..), fromJust, fromMaybe, maybe)
 import Data.Newtype (class Newtype, unwrap, wrap)
 import Data.Ord.Down (Down(..))
+import Data.Ord.Max (Max(..))
+import Data.Ord.Min (Min(..))
 import Data.Rational.Big (BigRational, toNumber, fromNumber)
 import Data.String (joinWith)
 import Data.Symbol (SProxy(..))
 import Data.Traversable (maximum)
 import Data.Tuple (Tuple(..), snd)
+import FunctionPlot.API (draw, functionPlot, setData)
+import FunctionPlot.Types (Closed(..), DatumU(..), FunctionValue(..), GraphType(..), Interval(..), Plot, Point(..), Points, Sampler(..), SplitUpdatePolicy(..), defaultAxisOptions, linear, points)
+import FunctionPlot.Types.Foreign (mkDatum)
+import FunctionPlot.Types.Internal (fillIn)
 import Halogen as H
 import Halogen.Component.ChildPath (cp1, cp2)
 import Halogen.HTML as HH
@@ -37,7 +41,6 @@ import Main.Matrix (Matrix, mkMatrix, unMatrix, inverse, matProduct)
 import Main.Polynomials (Atom(..), Polynomial, Row(..), Table, Variable, simplify, calcRow, constant, degree, discardVariables, disp, evalAt, freeVariables, gather, genp, lookup, lookupIn, mkRow, mkSpecialized, mkTable, mmkAtom, nthderivative, parseLinear, parseLinear_, setCoefficient, showcode, showGLSL, substitute, variable, zeroRow)
 import Partial.Unsafe (unsafePartial)
 import Prelude hiding (degree)
-import Unsafe.Coerce (unsafeCoerce)
 
 type AffDOM eff = Aff ( dom :: DOM | eff )
 
@@ -345,11 +348,11 @@ reviseConditions f state =
             Tuple k $ fromMaybe 0.0 $ Map.lookup k state.variables
       }
 
-computePoints :: Map Variable Number -> ConditionMap -> Array (Tuple Number Number)
+computePoints :: Map Variable Number -> ConditionMap -> Points
 computePoints variables = Map.toUnfoldable >>> Arr.mapMaybe
   \(Tuple (CKey { derivative, position }) value) ->
     if derivative /= 0 then Nothing else Just $
-      Tuple position $ calcRow variables value
+      Point position $ calcRow variables value
 
 initialState :: State
 initialState =
@@ -508,7 +511,6 @@ separate :: forall p i. HH.HTML p i -> Array (HH.HTML p i) -> HH.HTML p i
 separate sep = HH.span_ <<< intercalate [sep] <<< map Arr.singleton
 
 type GraphState = Maybe Plot
-type Points = Array (Tuple Number Number)
 data GraphQuery a = Initialize a | SetPolynomial Points Polynomial a
 
 graphComponent :: forall eff. H.Component HH.HTML GraphQuery Unit Void (AffDOM eff)
@@ -536,17 +538,14 @@ graphComponent =
       Just graph -> H.liftEff do
         let
           graphData =
-            [ { graphType: "polyline"
-              , fn: showcode p
-              , derivative:
-                  { fn: showcode (nthderivative 1 p)
-                  , updateOnMouseMove: true
-                  }
+            [ Datum
+              { graphType: PolylineGraph BuiltInSampler Open
+              , derivative: Just $ Updating
+                  { fn: StrFn $ showcode $ nthderivative 1 p }
               }
-            , { graphType: "scatter"
-              , fnType: "points"
-              , points: pts <#> \(Tuple x y) -> [x, y]
-              } # unsafeCoerce
+              (linear (StrFn $ showcode p)) # mkDatum
+            , Datum { graphType: ScatterGraph IntervalSampler Open }
+              (points pts) # mkDatum
             ]
         setData graph graphData
         draw graph
@@ -558,89 +557,14 @@ graphComponent =
       pts = computePoints initialState.variables initialState.conditions
       options =
         {
-          target: wrap "#graph",
-          xAxis: {
-            "type": "linear",
-            domain: [0.0, 1.0],
-            invert: false,
-            label: ""
+          target: QuerySelector "#graph",
+          xAxis: fillIn defaultAxisOptions {
+            domain: Interval (Min 0.0) (Max 1.0)
           },
-          yAxis: {
-            "type": "linear",
-            domain: [0.0, 1.0],
-            invert: false,
-            label: ""
+          yAxis: fillIn defaultAxisOptions {
+            domain: Interval (Min 0.0) (Max 2.0)
           }
         }
     plot <- H.liftEff $ functionPlot options
     H.modify (const (Just plot))
     eval (SetPolynomial pts p a)
-
-type AxisOptions =
-  { type :: String
-  , domain :: Array Number
-  , invert :: Boolean
-  , label :: String
-  }
-type Options =
-  ( target :: QuerySelector
-  , title :: String
-  , xAxis :: AxisOptions
-  , yAxis :: AxisOptions
-  , disableZoom :: Boolean
-  , grid :: Boolean
-  , tip ::
-      { xLine :: Boolean
-      , yLine :: Boolean
-      , renderer :: Fn2 Number Number String
-      }
-  , annotations :: Array
-      { x :: Number
-      , y :: Number
-      , text :: String
-      }
-  , "data" :: Data
-  )
-type Data = Array Datum
-type Datum = forall r. Record r
-  {- graphType :: String
-  , fn :: String
-  , derivative ::
-      { fn :: String
-      , updateOnMouseMove :: Boolean
-      }
-  -}
-  {- title :: String
-  , skipTip :: Boolean
-  , range :: Array Number
-  , nSamples :: Int
-  , graphType :: String
-  , fnType :: String
-  , sampler :: String
-  -}
-
-foreign import data Plot :: Type
-foreign import functionPlotImpl ::
-  forall r eff. Record r -> Eff (dom :: DOM | eff) Plot
-functionPlot ::
-  forall r fill eff.
-    Union r fill Options =>
-  Record r -> Eff (dom :: DOM | eff) Plot
-functionPlot = functionPlotImpl
-
-foreign import setOptionsImpl ::
-  forall r eff. Plot -> Record r -> Eff (dom :: DOM | eff) Unit
-setOptions ::
-  forall r fill eff.
-    Union r fill Options =>
-  Plot -> Record r -> Eff (dom :: DOM | eff) Unit
-setOptions = setOptionsImpl
-
-foreign import setDataImpl ::
-  forall r eff. Plot -> Array (Record r) -> Eff (dom :: DOM | eff) Unit
-setData ::
-  forall r eff.
-  Plot -> Array (Record r) -> Eff (dom :: DOM | eff) Unit
-setData = setDataImpl
-
-foreign import draw :: forall eff. Plot -> Eff (dom :: DOM | eff) Unit
